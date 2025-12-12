@@ -13,12 +13,69 @@ const app = express();
 const bookingRoutes = require("./routes/bookings");
 const pushRoutes = require("./routes/push");
 const promoRoutes = require("./routes/promos");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
+const mongoSanitize = require("express-mongo-sanitize");
+
 // 🔴 These must come BEFORE app.use('/api/auth', authRoutes)
 app.use(express.json()); // <<<<<< THIS is the important one
+app.disable("x-powered-by");
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+
+app.use(
+  mongoSanitize({
+    replaceWith: "_",
+  })
+);
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 1000,               // per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use(globalLimiter);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20, // login/register attempts
+  message: {
+    error: "Too many attempts, please try again later.",
+  },
+});
+
+
+const allowedOrigins = [
+  "https://car-time-admin.vercel.app",
+  "https://car-time-backend.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:4000",
+];
+
+app.use(
+  cors({
+origin: function (origin, callback) {
+  if (!origin) return callback(null, true); // Postman/server-to-server
+
+  if (allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+
+  return callback(new Error(`CORS blocked for origin: ${origin}`), false);
+},
+    credentials: true,
+  })
+);
 
 // Routes
 console.log(chalk.cyan("📦 Routes loaded:"));
 
+app.use("/api/auth", authLimiter);
 app.use("/api/auth", authRoutes);
 console.log(chalk.gray("• /api/auth"));
 app.use("/api/owner", ownerRoutes);
@@ -36,41 +93,28 @@ console.log(chalk.gray("• /api/push"));
 app.use("/api/promos", promoRoutes);
 console.log(chalk.gray("• /api/promos"));
 
+
 app.get("/", (req, res) => {
   res.send("API running...");
 });
-app.get("/api/health", (req, res) => res.json({ ok: true, app: "CarTime API" }));
 
-const allowedOrigins = [
-  "https://car-time-admin.vercel.app",
-  "https://car-time-backend.vercel.app",
-  "http://localhost:3000",
-  "http://localhost:4000",
-];
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ ok: true });
+});
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow server-to-server & Postman
-      if (!origin) return callback(null, true);
 
-      // allow Vercel preview deployments
-      if (origin.endsWith(".vercel.app")) {
-        return callback(null, true);
-      }
+app.use((err, req, res, next) => {
+  console.error(chalk.red("❌ Error:"), err.message);
 
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+  if (process.env.NODE_ENV === "production") {
+    return res.status(500).json({ error: "Internal server error" });
+  }
 
-      return callback(
-        new Error(`CORS blocked for origin: ${origin}`),
-        false
-      );
-    },
-    credentials: true,
-  })
-);
+  res.status(500).json({
+    error: err.message,
+    stack: err.stack,
+  });
+});
 
 mongoose
   .connect(process.env.MONGO_URI)
