@@ -43,7 +43,6 @@ router.get("/car/:carId/calendar", async (req, res) => {
   try {
     const { carId } = req.params;
 
-    // Expect YYYY-MM-DD
     const fromStr = String(req.query.from || "");
     const toStr = String(req.query.to || "");
 
@@ -51,7 +50,7 @@ router.get("/car/:carId/calendar", async (req, res) => {
       return res.status(400).json({ error: "from/to are required (YYYY-MM-DD)" });
     }
 
-    const from = parseDateOnly(fromStr); // local-safe date
+    const from = parseDateOnly(fromStr);
     const to = parseDateOnly(toStr);
 
     if (!from || !to || to <= from) {
@@ -59,17 +58,15 @@ router.get("/car/:carId/calendar", async (req, res) => {
     }
 
     const bookings = await Booking.find({
-      carId,
+      car: carId, // ✅ FIXED
       status: { $in: ["pending", "confirmed"] },
-      startDate: { $lt: to },   // DateTime ok
-      endDate: { $gt: from },   // DateTime ok
+      startDate: { $lt: to },
+      endDate: { $gt: from },
     }).select("startDate endDate");
 
     const blocked = new Set();
 
     bookings.forEach((b) => {
-      // Block nights/days from startDate (inclusive) to endDate (exclusive)
-      // So return day is NOT blocked (checkout day stays selectable).
       let cur = new Date(b.startDate);
       cur.setHours(0, 0, 0, 0);
 
@@ -77,7 +74,7 @@ router.get("/car/:carId/calendar", async (req, res) => {
       end.setHours(0, 0, 0, 0);
 
       while (cur < end) {
-        blocked.add(toDateOnlyString(cur)); // "YYYY-MM-DD"
+        blocked.add(toDateOnlyString(cur)); // YYYY-MM-DD
         cur = addDays(cur, 1);
       }
     });
