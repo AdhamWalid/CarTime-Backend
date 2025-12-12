@@ -1,45 +1,42 @@
 // backend/routes/bookings.js
 const express = require("express");
 const router = express.Router();
+
 const Booking = require("../models/Booking");
 const Car = require("../models/Car");
-const UserEvent = require("../models/UserEvent");
-const { requireAuth } = require("../middleware/auth");
 const User = require("../models/User");
+const UserEvent = require("../models/UserEvent");
+
+const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
 
 // all booking endpoints require login
 router.use(requireAuth);
 
-// helper: compute number of days (min 1)
-function diffDays(startStr, endStr) {
-  const start = new Date(startStr);
-  const end = new Date(endStr);
-  const ms = end - start;
-  const days = ms / (1000 * 60 * 60 * 24);
-  return Math.round(days);
+// ---------- helpers ----------
+function toUtcStartOfDay(date) {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
 }
 
-/**
- * POST /api/bookings
- * Body: { carId, startDate, endDate, contactPhone }
- */
+// nights between pickup day and return day (return is exclusive)
+function diffNights(startISO, endISO) {
+  const start = toUtcStartOfDay(new Date(startISO));
+  const end = toUtcStartOfDay(new Date(endISO));
+  const ms = end - start;
+  const nights = Math.round(ms / (1000 * 60 * 60 * 24));
+  return nights;
+}
+
+function isValidDate(d) {
+  return d instanceof Date && !isNaN(d.getTime());
+}
+
+// ---------- POST /api/bookings ----------
 router.post("/", async (req, res) => {
   try {
-    // pseudo-helper you can call in screens
-    if (res.status === 403) {
-      const data = await res.json();
-      if (data.message?.toLowerCase().includes("banned")) {
-        Alert.alert("Account banned", data.message, [
-          {
-            text: "OK",
-            onPress: () => logout(), // from AuthContext
-          },
-        ]);
-        return;
-      }
-    }
     const { carId, startDate, endDate, contactPhone } = req.body;
 
     if (!carId || !startDate || !endDate || !contactPhone) {
@@ -48,50 +45,67 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const car = await Car.findById(carId);
+    // startDate & endDate can include time (ISO). endDate is return date-time.
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (!isValidDate(start) || !isValidDate(end) || end <= start) {
+      return res.status(400).json({
+        message: "Invalid dates. endDate must be after startDate.",
+      });
+    }
+
+    const car = await Car.findById(carId).lean();
     if (!car || car.status !== "published") {
       return res.status(400).json({ message: "Car not available for booking" });
     }
 
-    const days = diffDays(startDate, endDate);
-    if (isNaN(days) || days < 1) {
+    // Nights (min 1)
+    const nights = diffNights(start.toISOString(), end.toISOString());
+    if (isNaN(nights) || nights < 1) {
       return res.status(400).json({
         message: "Minimum booking is 1 day. Please check your dates.",
       });
     }
 
-    // overlap for [start,end): existing.start < newEnd && existing.end > newStart
-      const conflict = await Booking.findOne({
-        carId,
-        status: { $in: ["pending", "confirmed"] },
-        startDate: { $lt: endDate },
-        endDate: { $gt: startDate },
-      }).select("_id startDate endDate");
+    // overlap rule for [start,end): existing.start < newEnd AND existing.end > newStart
+    // IMPORTANT: your schema uses car/user fields, not carId/userId
+    const conflict = await Booking.findOne({
+      car: carId,
+      status: { $in: ["pending", "confirmed"] },
+      startDate: { $lt: end },
+      endDate: { $gt: start },
+    }).select("_id startDate endDate");
 
-      if (conflict) {
-        return res.status(409).json({
-          error: "DATES_UNAVAILABLE",
-          message: "These dates are already booked.",
-        });
-      }
+    if (conflict) {
+      return res.status(409).json({
+        error: "DATES_UNAVAILABLE",
+        message: "Selected dates are already booked.",
+      });
+    }
 
-    const totalPrice = days * car.pricePerDay;
+    const totalPrice = nights * (car.pricePerDay || 0);
 
     const booking = await Booking.create({
       user: req.user.id,
-      car: car._id,
+      car: carId,
+
       carPlate: car.plateNumber || "N/A",
-      carTitle: car.title || `${car.make} ${car.model}`,
-      carPricePerDay: car.pricePerDay,
-      startDate,
-      endDate,
+      carTitle: car.title || `${car.make || ""} ${car.model || ""}`.trim(),
+      carPricePerDay: car.pricePerDay || 0,
+
+      startDate: start,
+      endDate: end,
+
       totalPrice,
       pickupCity: car.locationCity,
       contactPhone,
+
       status: "confirmed",
       paymentStatus: "paid",
     });
 
+    // Log event
     await UserEvent.create({
       user: req.user.id,
       action: "booking_created",
@@ -108,65 +122,58 @@ router.post("/", async (req, res) => {
       },
     });
 
-
-    // message bits
-    const carName = car.title || `${car.make} ${car.model}`;
-    const daysLabel = `${days} day${days > 1 ? "s" : ""}`;
-
-    const renter = await User.findById(req.user.id).select(
-      "name expoPushToken"
-    );
+    // Push notification to renter
+    const renter = await User.findById(req.user.id).select("name expoPushToken");
     if (renter?.expoPushToken) {
       await sendExpoPushNotification(renter.expoPushToken, {
         title: "Booking Confirmed ✅",
         body: `Your booking for ${booking.carTitle} is confirmed.`,
-        data: {
-          type: "BOOKING_CONFIRMED",
-          bookingId: booking._id.toString(),
-        },
+        data: { type: "BOOKING_CONFIRMED", bookingId: booking._id.toString() },
       });
     }
 
-    // 🔔 Push notification to the owner (car owner)
-    if (car.ownerId && car.ownerId.expoPushToken) {
-      await sendExpoPushNotification(car.ownerId.expoPushToken, {
-        title: "New booking 📅",
-        body: `${renter?.name || "A customer"} booked your ${booking.carTitle}.`,
-        data: {
-          type: "NEW_BOOKING",
-          bookingId: booking._id.toString(),
-          carId: car._id.toString(),
-        },
-      });
+    // Push notification to owner (must fetch owner user)
+    if (car.ownerId) {
+      const owner = await User.findById(car.ownerId).select("expoPushToken name");
+      if (owner?.expoPushToken) {
+        await sendExpoPushNotification(owner.expoPushToken, {
+          title: "New booking 📅",
+          body: `${renter?.name || "A customer"} booked your ${booking.carTitle}.`,
+          data: {
+            type: "NEW_BOOKING",
+            bookingId: booking._id.toString(),
+            carId: carId.toString(),
+          },
+        });
+      }
     }
 
-    res.status(201).json(booking);
+    return res.status(201).json(booking);
   } catch (err) {
     console.error("Create booking error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-/**
- * GET /api/bookings/my  – current user's bookings
- */
+// ---------- GET /api/bookings/my ----------
 router.get("/my", async (req, res) => {
   try {
     const bookings = await Booking.find({ user: req.user.id })
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json(bookings);
+    return res.json(bookings);
   } catch (err) {
     console.error("My bookings error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-
+// ---------- GET /api/bookings/car/:carId/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD ----------
 router.get("/car/:carId/calendar", async (req, res) => {
   try {
     const { carId } = req.params;
+
     const from = parseDateOnly(req.query.from);
     const to = parseDateOnly(req.query.to);
 
@@ -174,21 +181,21 @@ router.get("/car/:carId/calendar", async (req, res) => {
       return res.status(400).json({ error: "Invalid date range" });
     }
 
-    // find bookings that overlap the requested window
-    // overlap rule for [start,end) : start < to && end > from
     const bookings = await Booking.find({
-      carId,
+      car: carId,
       status: { $in: ["pending", "confirmed"] },
       startDate: { $lt: to },
       endDate: { $gt: from },
-    }).select("startDate endDate status");
+    }).select("startDate endDate");
 
-    // Expand to day strings (endDate is exclusive)
+    // Expand booked DAYS (nights) - endDate day is NOT blocked.
     const bookedSet = new Set();
+
     for (const b of bookings) {
-      const cur = new Date(b.startDate);
-      const end = new Date(b.endDate);
-      while (cur < end) {
+      let cur = toUtcStartOfDay(b.startDate);
+      const endDay = toUtcStartOfDay(b.endDate);
+
+      while (cur < endDay) {
         bookedSet.add(toDateOnlyString(cur));
         cur.setUTCDate(cur.getUTCDate() + 1);
       }
@@ -200,8 +207,8 @@ router.get("/car/:carId/calendar", async (req, res) => {
       to: toDateOnlyString(to),
       bookedDates: Array.from(bookedSet).sort(),
     });
-  } catch (e) {
-    console.error("calendar error:", e.message);
+  } catch (err) {
+    console.error("Calendar error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
