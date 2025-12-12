@@ -15,7 +15,8 @@ const pushRoutes = require("./routes/push");
 const promoRoutes = require("./routes/promos");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
-const mongoSanitize = require("express-mongo-sanitize");
+const sanitize = require("mongo-sanitize");
+
 
 // 🔴 These must come BEFORE app.use('/api/auth', authRoutes)
 app.use(express.json()); // <<<<<< THIS is the important one
@@ -27,11 +28,17 @@ app.use(
 );
 
 
-app.use(
-  mongoSanitize({
-    replaceWith: "_",
-  })
-);
+app.use((req, res, next) => {
+  if (req.body) req.body = sanitize(req.body);
+  if (req.params) req.params = sanitize(req.params);
+
+  // DON’T reassign req.query (getter-only in your case)
+  // If you need query sanitization, sanitize into a new object:
+  if (req.query) req.sanitizedQuery = sanitize({ ...req.query });
+
+  next();
+});
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 min
   max: 1000,               // per IP
