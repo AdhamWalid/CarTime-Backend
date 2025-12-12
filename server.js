@@ -16,6 +16,7 @@ const promoRoutes = require("./routes/promos");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const sanitize = require("mongo-sanitize");
+const connectDB = require("./db"); // adjust path if you put it elsewhere
 
 
 // 🔴 These must come BEFORE app.use('/api/auth', authRoutes)
@@ -105,8 +106,28 @@ app.get("/", (req, res) => {
   res.send("API running...");
 });
 
-app.get("/api/health", (req, res) => {
-  res.status(200).json({ ok: true });
+app.get("/api/health", async (req, res) => {
+  let dbOk = false;
+
+  try {
+    await connectDB();
+
+    // Ping admin database (safe, no data leaked)
+    await mongoose.connection.db.admin().ping();
+
+    dbOk = true;
+  } catch (e) {
+    dbOk = false;
+  }
+
+  return res.status(dbOk ? 200 : 503).json({
+    ok: true,
+    db: {
+      ok: dbOk,
+      status: dbOk ? "connected" : "unreachable",
+    },
+    time: new Date().toISOString(),
+  });
 });
 
 
