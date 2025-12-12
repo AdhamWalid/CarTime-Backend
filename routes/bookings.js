@@ -12,7 +12,6 @@ const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
 
 // all booking endpoints require login
-router.use(requireAuth);
 
 // ---------- helpers ----------
 function toUtcStartOfDay(date) {
@@ -33,6 +32,64 @@ function diffNights(startISO, endISO) {
 function isValidDate(d) {
   return d instanceof Date && !isNaN(d.getTime());
 }
+function addDays(d, n) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+
+router.get("/car/:carId/calendar", async (req, res) => {
+  try {
+    const { carId } = req.params;
+
+    // Expect YYYY-MM-DD
+    const fromStr = String(req.query.from || "");
+    const toStr = String(req.query.to || "");
+
+    if (!fromStr || !toStr) {
+      return res.status(400).json({ error: "from/to are required (YYYY-MM-DD)" });
+    }
+
+    const from = parseDateOnly(fromStr); // local-safe date
+    const to = parseDateOnly(toStr);
+
+    if (!from || !to || to <= from) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+
+    const bookings = await Booking.find({
+      carId,
+      status: { $in: ["pending", "confirmed"] },
+      startDate: { $lt: to },   // DateTime ok
+      endDate: { $gt: from },   // DateTime ok
+    }).select("startDate endDate");
+
+    const blocked = new Set();
+
+    bookings.forEach((b) => {
+      // Block nights/days from startDate (inclusive) to endDate (exclusive)
+      // So return day is NOT blocked (checkout day stays selectable).
+      let cur = new Date(b.startDate);
+      cur.setHours(0, 0, 0, 0);
+
+      const end = new Date(b.endDate);
+      end.setHours(0, 0, 0, 0);
+
+      while (cur < end) {
+        blocked.add(toDateOnlyString(cur)); // "YYYY-MM-DD"
+        cur = addDays(cur, 1);
+      }
+    });
+
+    res.json({ carId, bookedDates: [...blocked] });
+  } catch (err) {
+    console.error("Calendar error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.use(requireAuth);
 
 // ---------- POST /api/bookings ----------
 router.post("/", async (req, res) => {
@@ -170,47 +227,6 @@ router.get("/my", async (req, res) => {
 });
 
 // ---------- GET /api/bookings/car/:carId/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD ----------
-router.get("/car/:carId/calendar", async (req, res) => {
-  try {
-    const { carId } = req.params;
 
-    const from = parseDateOnly(req.query.from);
-    const to = parseDateOnly(req.query.to);
-
-    if (!from || !to || to <= from) {
-      return res.status(400).json({ error: "Invalid date range" });
-    }
-
-    const bookings = await Booking.find({
-      car: carId,
-      status: { $in: ["pending", "confirmed"] },
-      startDate: { $lt: to },
-      endDate: { $gt: from },
-    }).select("startDate endDate");
-
-    // Expand booked DAYS (nights) - endDate day is NOT blocked.
-    const bookedSet = new Set();
-
-    for (const b of bookings) {
-      let cur = toUtcStartOfDay(b.startDate);
-      const endDay = toUtcStartOfDay(b.endDate);
-
-      while (cur < endDay) {
-        bookedSet.add(toDateOnlyString(cur));
-        cur.setUTCDate(cur.getUTCDate() + 1);
-      }
-    }
-
-    return res.json({
-      carId,
-      from: toDateOnlyString(from),
-      to: toDateOnlyString(to),
-      bookedDates: Array.from(bookedSet).sort(),
-    });
-  } catch (err) {
-    console.error("Calendar error:", err);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
 
 module.exports = router;
