@@ -7,6 +7,8 @@ const UserEvent = require("../models/UserEvent");
 const { requireAuth } = require("../middleware/auth");
 const User = require("../models/User");
 const { sendExpoPushNotification } = require("../utils/expoPush");
+const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
+
 // all booking endpoints require login
 router.use(requireAuth);
 
@@ -57,6 +59,21 @@ router.post("/", async (req, res) => {
         message: "Minimum booking is 1 day. Please check your dates.",
       });
     }
+
+    // overlap for [start,end): existing.start < newEnd && existing.end > newStart
+      const conflict = await Booking.findOne({
+        carId,
+        status: { $in: ["pending", "confirmed"] },
+        startDate: { $lt: endDate },
+        endDate: { $gt: startDate },
+      }).select("_id startDate endDate");
+
+      if (conflict) {
+        return res.status(409).json({
+          error: "DATES_UNAVAILABLE",
+          message: "These dates are already booked.",
+        });
+      }
 
     const totalPrice = days * car.pricePerDay;
 
@@ -143,6 +160,49 @@ router.get("/my", async (req, res) => {
   } catch (err) {
     console.error("My bookings error:", err);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+router.get("/car/:carId/calendar", async (req, res) => {
+  try {
+    const { carId } = req.params;
+    const from = parseDateOnly(req.query.from);
+    const to = parseDateOnly(req.query.to);
+
+    if (!from || !to || to <= from) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+
+    // find bookings that overlap the requested window
+    // overlap rule for [start,end) : start < to && end > from
+    const bookings = await Booking.find({
+      carId,
+      status: { $in: ["pending", "confirmed"] },
+      startDate: { $lt: to },
+      endDate: { $gt: from },
+    }).select("startDate endDate status");
+
+    // Expand to day strings (endDate is exclusive)
+    const bookedSet = new Set();
+    for (const b of bookings) {
+      const cur = new Date(b.startDate);
+      const end = new Date(b.endDate);
+      while (cur < end) {
+        bookedSet.add(toDateOnlyString(cur));
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    }
+
+    return res.json({
+      carId,
+      from: toDateOnlyString(from),
+      to: toDateOnlyString(to),
+      bookedDates: Array.from(bookedSet).sort(),
+    });
+  } catch (e) {
+    console.error("calendar error:", e.message);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 

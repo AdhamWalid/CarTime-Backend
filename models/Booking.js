@@ -9,8 +9,8 @@ const bookingSchema = new mongoose.Schema(
     carTitle: { type: String },
     carPricePerDay: { type: Number },
 
-    startDate: { type: String, required: true },
-    endDate: { type: String, required: true },
+    startDate: { type: Date, required: true, index: true }, // pickup
+    endDate: { type: Date, required: true, index: true },   // checkout (exclusive)
 
     totalPrice: { type: Number, required: true },
     pickupCity: { type: String },
@@ -31,5 +31,7 @@ const bookingSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+bookingSchema.index({ carId: 1, startDate: 1, endDate: 1, status: 1 });
 
 module.exports = mongoose.model("Booking", bookingSchema);
