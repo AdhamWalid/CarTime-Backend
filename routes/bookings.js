@@ -11,8 +11,6 @@ const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
 
-// all booking endpoints require login
-
 // ---------- helpers ----------
 function toUtcStartOfDay(date) {
   const d = new Date(date);
@@ -20,25 +18,24 @@ function toUtcStartOfDay(date) {
   return d;
 }
 
-// nights between pickup day and return day (return is exclusive)
 function diffNights(startISO, endISO) {
   const start = toUtcStartOfDay(new Date(startISO));
   const end = toUtcStartOfDay(new Date(endISO));
   const ms = end - start;
-  const nights = Math.round(ms / (1000 * 60 * 60 * 24));
-  return nights;
+  return Math.round(ms / (1000 * 60 * 60 * 24));
 }
 
 function isValidDate(d) {
   return d instanceof Date && !isNaN(d.getTime());
 }
+
 function addDays(d, n) {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
   return x;
 }
 
-
+// ✅ PUBLIC: GET /api/bookings/car/:carId/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD
 router.get("/car/:carId/calendar", async (req, res) => {
   try {
     const { carId } = req.params;
@@ -58,7 +55,7 @@ router.get("/car/:carId/calendar", async (req, res) => {
     }
 
     const bookings = await Booking.find({
-      car: carId, // ✅ FIXED
+      car: carId, // ✅ correct field
       status: { $in: ["pending", "confirmed"] },
       startDate: { $lt: to },
       endDate: { $gt: from },
@@ -73,19 +70,21 @@ router.get("/car/:carId/calendar", async (req, res) => {
       const end = new Date(b.endDate);
       end.setHours(0, 0, 0, 0);
 
+      // Block days from start (inclusive) to end (exclusive)
       while (cur < end) {
-        blocked.add(toDateOnlyString(cur)); // YYYY-MM-DD
+        blocked.add(toDateOnlyString(cur));
         cur = addDays(cur, 1);
       }
     });
 
-    res.json({ carId, bookedDates: [...blocked] });
+    return res.json({ carId, bookedDates: [...blocked] });
   } catch (err) {
     console.error("Calendar error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
+// ✅ Everything below requires login
 router.use(requireAuth);
 
 // ---------- POST /api/bookings ----------
@@ -99,7 +98,6 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // startDate & endDate can include time (ISO). endDate is return date-time.
     const start = new Date(startDate);
     const end = new Date(endDate);
 
@@ -114,7 +112,6 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "Car not available for booking" });
     }
 
-    // Nights (min 1)
     const nights = diffNights(start.toISOString(), end.toISOString());
     if (isNaN(nights) || nights < 1) {
       return res.status(400).json({
@@ -122,8 +119,6 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // overlap rule for [start,end): existing.start < newEnd AND existing.end > newStart
-    // IMPORTANT: your schema uses car/user fields, not carId/userId
     const conflict = await Booking.findOne({
       car: carId,
       status: { $in: ["pending", "confirmed"] },
@@ -156,10 +151,9 @@ router.post("/", async (req, res) => {
       contactPhone,
 
       status: "confirmed",
-      paymentStatus: "paid",
+      paymentStatus: "pending",
     });
 
-    // Log event
     await UserEvent.create({
       user: req.user.id,
       action: "booking_created",
@@ -176,7 +170,6 @@ router.post("/", async (req, res) => {
       },
     });
 
-    // Push notification to renter
     const renter = await User.findById(req.user.id).select("name expoPushToken");
     if (renter?.expoPushToken) {
       await sendExpoPushNotification(renter.expoPushToken, {
@@ -186,7 +179,6 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Push notification to owner (must fetch owner user)
     if (car.ownerId) {
       const owner = await User.findById(car.ownerId).select("expoPushToken name");
       if (owner?.expoPushToken) {
@@ -222,8 +214,5 @@ router.get("/my", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
-
-// ---------- GET /api/bookings/car/:carId/calendar?from=YYYY-MM-DD&to=YYYY-MM-DD ----------
-
 
 module.exports = router;
