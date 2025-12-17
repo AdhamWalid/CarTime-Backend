@@ -18,7 +18,7 @@ const rateLimit = require("express-rate-limit");
 const sanitize = require("mongo-sanitize");
 const connectDB = require("./db"); // adjust path if you put it elsewhere
 
-
+const accountDeletionRequestsRoute = require("./routes/accountDeletionRequests");
 // 🔴 These must come BEFORE app.use('/api/auth', authRoutes)
 app.use(express.json()); // <<<<<< THIS is the important one
 app.disable("x-powered-by");
@@ -82,7 +82,8 @@ origin: function (origin, callback) {
 
 // Routes
 console.log(chalk.cyan("📦 Routes loaded:"));
-
+app.use("/api/account-deletion-requests", accountDeletionRequestsRoute);
+console.log(chalk.gray("• /api/account-deletion-requests"));
 app.use("/api/auth", authLimiter);
 app.use("/api/auth", authRoutes);
 console.log(chalk.gray("• /api/auth"));
