@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const AccountDeletionRequest = require("../models/AccountDeletionRequest");
+const AccountDeletionRequest = require("../models/DeletionRequest");
 
 // POST /api/account-deletion-requests
 router.post("/", async (req, res) => {
