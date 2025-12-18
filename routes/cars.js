@@ -44,7 +44,6 @@ if (res.status === 403) {
         seats: car.seats,
         description: car.description,
         pickupInstructions: car.pickupInstructions,
-        transmissionType: car.transmissionType,
       }))
     );
   } catch (err) {
