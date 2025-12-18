@@ -37,6 +37,7 @@ if (res.status === 403) {
         ownerName: car.ownerId?.name || null,
         imageUrl: car.imageUrl || "", // 👈 include images
         plateNumber: car.plateNumber, // 👈 include plate number
+        hasDeposit: car.hasDeposit,
       }))
     );
   } catch (err) {
