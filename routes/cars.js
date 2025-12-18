@@ -38,6 +38,12 @@ if (res.status === 403) {
         imageUrl: car.imageUrl || "", // 👈 include images
         plateNumber: car.plateNumber, // 👈 include plate number
         hasDeposit: car.hasDeposit,
+        depositAmount: car.depositAmount,
+        transmission: car.transmission,
+        fuelType: car.fuelType,
+        seats: car.seats,
+        description: car.description,
+        pickupInstructions: car.pickupInstructions,
       }))
     );
   } catch (err) {
