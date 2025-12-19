@@ -59,8 +59,10 @@ const authLimiter = rateLimit({
 
 
 const allowedOrigins = [
-  "https://car-time-admin.vercel.app",
-  "https://car-time-backend.vercel.app",
+  "https://api.cartime.my",
+  "https://cartime.my",
+  "https://www.cartime.my",
+  "https://admin.cartime.my",
   "http://localhost:3000",
   "http://localhost:4000",
 ];
