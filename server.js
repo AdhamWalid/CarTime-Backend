@@ -61,6 +61,7 @@ const authLimiter = rateLimit({
 const allowedOrigins = [
   "https://api.cartime.my",
   "https://cartime.my",
+  "https://admin.cartime.my",
   "https://www.cartime.my",
   "https://admin.cartime.my",
   "http://localhost:3000",
