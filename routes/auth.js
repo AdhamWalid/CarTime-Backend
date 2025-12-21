@@ -267,7 +267,7 @@ router.post("/forgot-password", async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
 
   // Return ok no matter what (avoid enumeration)
-  res.status(200).json({ ok: true });
+  // res.status(200).json({ ok: true });
 
   try {
     if (!email) return;
@@ -284,9 +284,10 @@ router.post("/forgot-password", async (req, res) => {
     await user.save();
 
     // Link on your domain
-    const base = process.env.RESET_PASSWORD_BASE_URL || "https://cartime.my";
+    const base = process.env.RESET_PASSWORD_BASE_URL ;
     const resetUrl = `${base}/reset-password?token=${rawToken}`;
-
+    console.log(user)
+    console.log(user.email)
     await sendEmail({
       to: user.email,
       subject: "Reset your Cartime password",
