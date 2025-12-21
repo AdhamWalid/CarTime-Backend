@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
+const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const appleSignin = require("apple-signin-auth");
@@ -15,6 +16,7 @@ const { sendVerificationEmail } = require("../utils/sendEmail");
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 const sendEmail = require("../utils/sendEmail");
+
 // Helper: sign a normal auth token
 function signAuthToken(user) {
   return jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
@@ -38,10 +40,6 @@ function signTwoFATempToken(user) {
 // ================== REGISTER ==================
 
 // POST /api/auth/register
-// ================== REGISTER (STEP 1 – SEND CODE, NO USER YET) ==================
-
-// POST /api/auth/register-start
-// routes/auth.js  (REGISTER)
 router.post("/register", async (req, res) => {
   try {
     const { name, email, password, phoneNumber, role } = req.body;
@@ -51,22 +49,16 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ message: "All fields are required." });
     }
 
-    // 1) Make sure no real user already exists with this email
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: "Email already in use." });
     }
 
-    // 2) Hash password now
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // 3) Generate a 6-digit code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // 4) Clear old pending verifications for this email
     await EmailVerification.deleteMany({ email });
 
-    // 5) Save pending registration
     await EmailVerification.create({
       email,
       code,
@@ -74,9 +66,9 @@ router.post("/register", async (req, res) => {
       hashedPassword,
       phoneNumber,
       role: role === "owner" ? "owner" : "renter",
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
     });
 
-    // 6) Send email with code
     await sendEmail({
       to: email,
       subject: "Verify your Cartime account",
@@ -88,10 +80,9 @@ router.post("/register", async (req, res) => {
       `,
     });
 
-    // 7) DO NOT create user yet, DO NOT return token
     return res.json({
       message: "Verification code sent to your email.",
-      email, // so frontend can pass it to VerifyEmail screen
+      email,
     });
   } catch (err) {
     console.error("Register error:", err);
@@ -99,6 +90,8 @@ router.post("/register", async (req, res) => {
   }
 });
 
+// NOTE: You already have /register and /register-start.
+// If both exist in production, keep only one flow to avoid confusion.
 router.post("/register-start", async (req, res) => {
   try {
     const { name, email, password, phoneNumber } = req.body;
@@ -114,7 +107,7 @@ router.post("/register-start", async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
 
     await EmailVerification.findOneAndUpdate(
       { email },
@@ -129,7 +122,6 @@ router.post("/register-start", async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // 🔥 REAL EMAIL SENDING
     try {
       await sendVerificationEmail(email, code);
       console.log("Verification email sent to:", email);
@@ -149,10 +141,7 @@ router.post("/register-start", async (req, res) => {
   }
 });
 
-// ================== REGISTER (STEP 2 – VERIFY CODE & CREATE USER) ==================
-
 // POST /api/auth/register-complete
-// Body: { email, code }
 router.post("/register-complete", async (req, res) => {
   try {
     const { email, code } = req.body;
@@ -163,7 +152,6 @@ router.post("/register-complete", async (req, res) => {
         .json({ message: "Email and verification code are required." });
     }
 
-    // find pending verification
     const record = await EmailVerification.findOne({ email });
     if (!record) {
       return res
@@ -171,19 +159,16 @@ router.post("/register-complete", async (req, res) => {
         .json({ message: "No verification request found for this email." });
     }
 
-    // check expiry
-    if (record.expiresAt < new Date()) {
+    if (record.expiresAt && record.expiresAt < new Date()) {
       return res
         .status(400)
         .json({ message: "Verification code expired. Please try again." });
     }
 
-    // compare code
     if (record.code !== code) {
       return res.status(400).json({ message: "Invalid verification code." });
     }
 
-    // safety check: still no real user with this email
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res
@@ -191,19 +176,17 @@ router.post("/register-complete", async (req, res) => {
         .json({ message: "Email already registered. Try logging in." });
     }
 
-    // create real user using stored hashed password
     const user = await User.create({
       name: record.name,
       email: record.email,
       phoneNumber: record.phoneNumber,
-      password: record.passwordHash, // already hashed in /register-start
-      role: "renter", // or adjust if you want owner-selection later
+      password: record.passwordHash || record.hashedPassword,
+      role: record.role || "renter",
+      emailVerified: true,
     });
 
-    // clean up verification
     await EmailVerification.deleteOne({ _id: record._id });
 
-    // sign JWT
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
       expiresIn: "7d",
     });
@@ -226,7 +209,6 @@ router.post("/register-complete", async (req, res) => {
 
 // ================== NORMAL LOGIN (MOBILE / APP) ==================
 
-// POST /api/auth/login
 router.post("/login", async (req, res) => {
   try {
     const { email, password, expoPushToken } = req.body;
@@ -277,10 +259,104 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// ================== FORGOT PASSWORD + RESET PASSWORD ==================
+
+// POST /api/auth/forgot-password
+// Always returns 200 to avoid email enumeration
+router.post("/forgot-password", async (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
+
+  // Return ok no matter what (avoid enumeration)
+  res.status(200).json({ ok: true });
+
+  try {
+    if (!email) return;
+
+    const user = await User.findOne({ email });
+    if (!user) return;
+
+    // Generate reset token (raw) + store SHA256 hash
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    user.resetPasswordToken = tokenHash;
+    user.resetPasswordExpires = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
+    await user.save();
+
+    // Link on your domain
+    const base = process.env.RESET_PASSWORD_BASE_URL || "https://cartime.my";
+    const resetUrl = `${base}/reset-password?token=${rawToken}`;
+
+    await sendEmail({
+      to: user.email,
+      subject: "Reset your Cartime password",
+      html: `
+        <div style="font-family: system-ui, -apple-system, Segoe UI, sans-serif; padding: 16px;">
+          <h2 style="margin:0 0 8px;">Reset your password</h2>
+          <p style="margin:0 0 16px; color:#555;">
+            We received a request to reset your Cartime password.
+          </p>
+          <a href="${resetUrl}" style="
+            display:inline-block;
+            background:#000;
+            color:#fff;
+            padding:12px 16px;
+            border-radius:12px;
+            text-decoration:none;
+            font-weight:700;
+          ">Reset Password</a>
+          <p style="margin-top:16px; font-size:12px; color:#666;">
+            This link expires in 30 minutes. If you didn’t request this, you can ignore this email.
+          </p>
+        </div>
+      `,
+    });
+  } catch (err) {
+    console.error("Forgot-password error:", err);
+  }
+});
+
+// POST /api/auth/reset-password
+// Body: { token, newPassword }
+router.post("/reset-password", async (req, res) => {
+  try {
+    const token = String(req.body.token || "").trim();
+    const newPassword = String(req.body.newPassword || "");
+
+    if (!token || newPassword.length < 8) {
+      return res.status(400).json({ message: "Invalid request." });
+    }
+
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const user = await User.findOne({
+      resetPasswordToken: tokenHash,
+      resetPasswordExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res
+        .status(400)
+        .json({ message: "Reset link is invalid or expired." });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    user.password = hashed;
+
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    return res.json({ ok: true, message: "Password updated successfully." });
+  } catch (err) {
+    console.error("Reset-password error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
 // ================== ADMIN LOGIN WITH 2FA ==================
 
-// POST /api/auth/admin-login
-// Used only by the web admin panel login page
 router.post("/admin-login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -291,7 +367,6 @@ router.post("/admin-login", async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user || user.role !== "admin") {
-      // do not reveal whether email exists
       return res.status(400).json({ message: "Invalid admin credentials." });
     }
 
@@ -306,32 +381,20 @@ router.post("/admin-login", async (req, res) => {
         .json({ message: "Your account has been banned. Contact support." });
     }
 
-    // If admin does NOT have 2FA enabled, behave like normal login
     if (!user.twoFAEnabled || !user.twoFASecret) {
       const token = signAuthToken(user);
       return res.json({
         requires2FA: false,
         token,
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-        },
+        user: { id: user._id, name: user.name, email: user.email, role: user.role },
       });
     }
 
-    // 2FA enabled → require second step
     const tempToken = signTwoFATempToken(user);
     return res.json({
       requires2FA: true,
       tempToken,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     console.error("Admin login error:", err);
@@ -339,7 +402,6 @@ router.post("/admin-login", async (req, res) => {
   }
 });
 
-// POST /api/auth/admin-login-2fa
 router.post("/admin-login-2fa", async (req, res) => {
   try {
     const { tempToken, code } = req.body;
@@ -376,7 +438,7 @@ router.post("/admin-login-2fa", async (req, res) => {
       secret: user.twoFASecret,
       encoding: "base32",
       token: code,
-      window: 1, // allow slight clock drift
+      window: 1,
     });
 
     if (!verified) {
@@ -387,12 +449,7 @@ router.post("/admin-login-2fa", async (req, res) => {
 
     res.json({
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     console.error("Admin 2FA verify error:", err);
@@ -402,10 +459,6 @@ router.post("/admin-login-2fa", async (req, res) => {
 
 // ================== ADMIN 2FA SETUP (ENABLE) ==================
 
-// POST /api/auth/admin/2fa/setup
-// Must be called by a logged-in admin from the panel
-// POST /api/auth/admin/2fa/setup
-// Must be called by a logged-in admin from the panel
 router.post("/admin/2fa/setup", requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -413,20 +466,17 @@ router.post("/admin/2fa/setup", requireAuth, async (req, res) => {
       return res.status(403).json({ message: "Not authorized." });
     }
 
-    // generate a new secret
     const secret = speakeasy.generateSecret({
       name: `Cartime Admin (${user.email})`,
     });
 
     user.twoFASecret = secret.base32;
-    user.twoFAEnabled = false; // not confirmed yet
+    user.twoFAEnabled = false;
     await user.save();
 
-    // build otpauth URL and QR data URL
     const otpauthUrl = secret.otpauth_url;
     const qrCodeDataUrl = await qrcode.toDataURL(otpauthUrl);
 
-    // frontend expects qrCodeDataUrl + secret
     res.json({
       qrCodeDataUrl,
       secret: secret.base32,
@@ -437,9 +487,6 @@ router.post("/admin/2fa/setup", requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/admin/2fa/confirm
-// Body: { code }
-// User enters code from Microsoft Authenticator to confirm
 router.post("/admin/2fa/confirm", requireAuth, async (req, res) => {
   try {
     const { code } = req.body;
@@ -478,7 +525,6 @@ router.post("/admin/2fa/confirm", requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/admin/2fa/disable
 router.post("/admin/2fa/disable", requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
@@ -500,7 +546,6 @@ router.post("/admin/2fa/disable", requireAuth, async (req, res) => {
 
 // ================== GET CURRENT USER ==================
 
-// GET /api/auth/me  -> return current user (without password)
 router.get("/me", requireAuth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
@@ -523,8 +568,8 @@ router.get("/me", requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/auth/email/resend
-// POST /api/auth/email/resend
+// ================== EMAIL RESEND + VERIFY ==================
+
 router.post("/email/resend", async (req, res) => {
   try {
     const { email } = req.body;
@@ -535,29 +580,23 @@ router.post("/email/resend", async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user) {
-      return res
-        .status(404)
-        .json({ message: "No user found with this email." });
+      return res.status(404).json({ message: "No user found with this email." });
     }
 
     if (user.emailVerified) {
       return res.status(400).json({ message: "Email is already verified." });
     }
 
-    // generate new 6-digit code
     const code = String(Math.floor(100000 + Math.random() * 900000));
 
-    // save to EmailVerification collection
     await EmailVerification.create({
       email,
       code,
       createdAt: new Date(),
     });
 
-    // send email using your mailer
     await sendEmail({
       to: email,
-      subject: "Your Cartime verification code",
       subject: "Verify your Cartime email",
       html: `
       <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 16px;">
@@ -591,9 +630,6 @@ router.post("/email/resend", async (req, res) => {
   }
 });
 
-// POST /api/auth/email/verify
-// body: { code: "123456" }
-// POST /api/auth/email/verify
 router.post("/email/verify", async (req, res) => {
   try {
     console.log("VERIFY BODY:", req.body);
@@ -605,7 +641,6 @@ router.post("/email/verify", async (req, res) => {
         .json({ message: "Email and verification code are required." });
     }
 
-    // 1) Find latest verification record for this email
     const record = await EmailVerification.findOne({ email })
       .sort({ createdAt: -1 })
       .exec();
@@ -616,54 +651,43 @@ router.post("/email/verify", async (req, res) => {
         .json({ message: "No verification request found for this email." });
     }
 
-    // 2) Check expiry (15 minutes)
     if (record.createdAt) {
       const expiresAt = new Date(record.createdAt.getTime() + 15 * 60 * 1000);
       if (Date.now() > expiresAt.getTime()) {
-        return res
-          .status(400)
-          .json({ message: "Verification code has expired." });
+        return res.status(400).json({ message: "Verification code has expired." });
       }
     }
 
-    // 3) Compare code
     if (record.code !== code.trim()) {
       return res.status(400).json({ message: "Invalid verification code." });
     }
 
-    // 4) If user already exists, just mark verified
     let user = await User.findOne({ email });
 
     if (!user) {
-      // 🚨 This is the case you're hitting now
-
-      if (!record.hashedPassword) {
-        // Safety guard: dev mistake or old records
+      const hashed = record.hashedPassword || record.passwordHash;
+      if (!hashed) {
         return res.status(500).json({
           message:
             "Verification data incomplete. Please register again to receive a new code.",
         });
       }
 
-      // ▶️ Create the real user now
       user = await User.create({
         name: record.name || email.split("@")[0],
         email,
-        password: record.hashedPassword,
+        password: hashed,
         phoneNumber: record.phoneNumber,
         role: record.role || "renter",
         emailVerified: true,
       });
     } else {
-      // If user somehow already exists, just mark verified
       user.emailVerified = true;
       await user.save();
     }
 
-    // 5) Clean up verification docs
     await EmailVerification.deleteMany({ email });
 
-    // 6) Issue auth token
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
       expiresIn: "7d",
     });
@@ -688,8 +712,8 @@ router.post("/email/verify", async (req, res) => {
   }
 });
 
-// POST /api/auth/social/google
-// Body: { idToken }
+// ================== SOCIAL LOGIN ==================
+
 router.post("/social/google", async (req, res) => {
   try {
     const { idToken } = req.body;
@@ -697,7 +721,6 @@ router.post("/social/google", async (req, res) => {
       return res.status(400).json({ message: "Google ID token required." });
     }
 
-    // 1) Verify token with Google
     const ticket = await googleClient.verifyIdToken({
       idToken,
       audience: process.env.GOOGLE_CLIENT_ID,
@@ -714,29 +737,17 @@ router.post("/social/google", async (req, res) => {
         .json({ message: "Google account has no accessible email." });
     }
 
-    // 2) Check if user exists
     let user = await User.findOne({ email });
 
-    if (user) {
-      // if this account was created as local, still allow login but mark provider if needed
-      if (!user.authProvider || user.authProvider === "local") {
-        // You can keep it or update to google; I'll keep it as-is.
-      } else if (user.authProvider !== "google") {
-        // Optional safety check
-        console.warn(
-          `User ${email} logged in via different provider: ${user.authProvider}`
-        );
-      }
-    } else {
-      // 3) Create new user with Google provider
+    if (!user) {
       user = await User.create({
         name,
         email,
-        password: null, // no password for social
+        password: null,
         phoneNumber: "",
         role: "renter",
         status: "active",
-        emailVerified: true, // Google verified email
+        emailVerified: true,
         authProvider: "google",
         providerId: googleUserId,
       });
@@ -747,15 +758,7 @@ router.post("/social/google", async (req, res) => {
     });
 
     const needsPhoneNumber = !user.phoneNumber;
-    // in Login.js after calling social login:
-    try {
-      const data = await loginWithGoogle();
-      if (data?.needsPhoneNumber) {
-        navigation.replace("CompletePhone");
-      }
-    } catch (err) {
-      Alert.alert("Google login failed", err.message || "Try again.");
-    }
+
     res.json({
       token,
       user: {
@@ -774,8 +777,6 @@ router.post("/social/google", async (req, res) => {
   }
 });
 
-// POST /api/auth/social/apple
-// Body: { identityToken } (JWT from Apple)
 router.post("/social/apple", async (req, res) => {
   try {
     const { identityToken } = req.body;
@@ -788,7 +789,7 @@ router.post("/social/apple", async (req, res) => {
     let decoded;
     try {
       decoded = await appleSignin.verifyIdToken(identityToken, {
-        audience: process.env.APPLE_CLIENT_ID, // your app's service ID / client ID
+        audience: process.env.APPLE_CLIENT_ID,
       });
     } catch (e) {
       console.error("Apple token verify error:", e);
@@ -796,11 +797,10 @@ router.post("/social/apple", async (req, res) => {
     }
 
     const appleUserId = decoded.sub;
-    const email = decoded.email; // sometimes only on first sign in
+    const email = decoded.email;
     const name = decoded.email?.split("@")[0] || "Apple User";
 
     if (!email) {
-      // In real production, you'd handle "no email" flow using Apple user ID
       return res.status(400).json({
         message:
           "Apple did not return an email. Please use normal login or another method.",
@@ -809,15 +809,7 @@ router.post("/social/apple", async (req, res) => {
 
     let user = await User.findOne({ email });
 
-    if (user) {
-      if (!user.authProvider || user.authProvider === "local") {
-        // ok
-      } else if (user.authProvider !== "apple") {
-        console.warn(
-          `User ${email} logged in via different provider: ${user.authProvider}`
-        );
-      }
-    } else {
+    if (!user) {
       user = await User.create({
         name,
         email,
@@ -855,16 +847,12 @@ router.post("/social/apple", async (req, res) => {
   }
 });
 
-// POST /api/auth/phone
-// Body: { phoneNumber }
-// Requires auth
+// Update phone for social users
 router.post("/phone", requireAuth, async (req, res) => {
   try {
     const { phoneNumber } = req.body;
     if (!phoneNumber || phoneNumber.trim().length < 5) {
-      return res
-        .status(400)
-        .json({ message: "Valid phone number is required." });
+      return res.status(400).json({ message: "Valid phone number is required." });
     }
 
     const user = await User.findById(req.user.id);
@@ -889,95 +877,6 @@ router.post("/phone", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("Update phone error:", err);
     res.status(500).json({ message: "Server error updating phone number." });
-  }
-});
-
-router.post("/forgot-password-mobile", async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-
-    // Avoid email enumeration: always respond success
-    if (!user) {
-      return res.json({
-        message: "If that email exists, a reset code has been sent.",
-      });
-    }
-
-    // 6-digit code
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedCode = await bcrypt.hash(code, salt);
-
-    user.resetCode = hashedCode;
-    user.resetCodeExpires = Date.now() + 15 * 60 * 1000; // 15 minutes
-    await user.save();
-
-    await sendMail({
-      to: user.email,
-      subject: "Cartime – Your password reset code",
-      html: `
-        <p>Hello ${user.name || "there"},</p>
-        <p>Your Cartime password reset code is:</p>
-        <h2>${code}</h2>
-        <p>This code will expire in 15 minutes.</p>
-        <p>If you didn't request this, you can ignore this email.</p>
-      `,
-    });
-
-    res.json({
-      message: "If that email exists, a reset code has been sent.",
-    });
-  } catch (err) {
-    console.error("forgot-password-mobile error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-router.post("/reset-password-mobile", async (req, res) => {
-  try {
-    const { email, code, newPassword } = req.body;
-    if (!email || !code || !newPassword) {
-      return res
-        .status(400)
-        .json({ message: "Email, code and new password are required." });
-    }
-
-    const user = await User.findOne({
-      email: email.toLowerCase(),
-      resetCodeExpires: { $gt: Date.now() },
-    });
-
-    if (!user || !user.resetCode) {
-      return res
-        .status(400)
-        .json({ message: "Invalid or expired reset code." });
-    }
-
-    const bcrypt = await import("bcryptjs").then((m) => m.default || m);
-    const isMatch = await bcrypt.compare(code, user.resetCode);
-    if (!isMatch) {
-      return res
-        .status(400)
-        .json({ message: "Invalid or expired reset code." });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(newPassword, salt);
-
-    user.resetCode = undefined;
-    user.resetCodeExpires = undefined;
-    await user.save();
-
-    res.json({ message: "Password updated successfully. You can login now." });
-  } catch (err) {
-    console.error("reset-password-mobile error:", err);
-    res.status(500).json({ message: "Server error" });
   }
 });
 

@@ -48,6 +48,9 @@ const UserSchema = new mongoose.Schema(
     // in User schema
     resetCode: { type: String },
     resetCodeExpires: { type: Date },
+
+    resetPasswordToken: { type: String },
+    resetPasswordExpires: { type: Date },
   },
   
   { timestamps: true }
