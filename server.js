@@ -20,6 +20,8 @@ const connectDB = require("./db"); // adjust path if you put it elsewhere
 
 const accountDeletionRequestsRoute = require("./routes/accountDeletionRequests");
 // 🔴 These must come BEFORE app.use('/api/auth', authRoutes)
+app.set("trust proxy", 1);
+
 app.use(express.json()); // <<<<<< THIS is the important one
 app.disable("x-powered-by");
 app.use(
@@ -46,7 +48,6 @@ const globalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-
 app.use(globalLimiter);
 
 const authLimiter = rateLimit({
