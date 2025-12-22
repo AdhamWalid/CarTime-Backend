@@ -13,6 +13,9 @@ const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
 const jwt = require("jsonwebtoken");
 const router = express.Router();
+const { Parser } = require("json2csv");
+const { buildMonthlyRevenuePdfBuffer } = require("../utils/buildMonthlyRevenuePdf");
+
 // near top of routes/admin.js
 const fetch = global.fetch;
 // All admin routes require admin login
@@ -911,6 +914,171 @@ router.get("/invoices/:id/pdf", async (req, res) => {
     bucket.openDownloadStream(fileId).pipe(res);
   } catch (err) {
     console.error("Admin invoice pdf error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// GET /api/admin/invoices/export.csv?q=...&status=...&from=...&to=...
+router.get("/invoices/export.csv", async (req, res) => {
+  try {
+    const { q, bookingId, userId, carId, status, from, to } = req.query;
+
+    const filter = {};
+    if (bookingId) filter.booking = bookingId;
+    if (userId) filter.user = userId;
+    if (carId) filter.car = carId;
+    if (status) filter.status = status;
+
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to) filter.createdAt.$lte = new Date(to);
+    }
+
+    if (q && String(q).trim()) {
+      const r = new RegExp(String(q).trim(), "i");
+      filter.$or = [
+        { invoiceNumber: r },
+        { renterEmail: r },
+        { renterName: r },
+        { carTitle: r },
+        { carPlate: r },
+      ];
+    }
+
+    const rows = await Invoice.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const fields = [
+      { label: "Invoice No", value: "invoiceNumber" },
+      { label: "Created At", value: (r) => (r.createdAt ? new Date(r.createdAt).toISOString() : "") },
+      { label: "Status", value: "status" },
+
+      { label: "Renter Name", value: "renterName" },
+      { label: "Renter Email", value: "renterEmail" },
+      { label: "Phone", value: "contactPhone" },
+
+      { label: "Car", value: "carTitle" },
+      { label: "Plate", value: "carPlate" },
+      { label: "Pickup City", value: "pickupCity" },
+
+      { label: "Start Date", value: (r) => (r.startDate ? new Date(r.startDate).toISOString() : "") },
+      { label: "End Date", value: (r) => (r.endDate ? new Date(r.endDate).toISOString() : "") },
+      { label: "Nights", value: "nights" },
+
+      { label: "Currency", value: "currency" },
+      { label: "Subtotal", value: (r) => Number(r.subtotal || 0).toFixed(2) },
+      { label: "Discount", value: (r) => Number(r.discount || 0).toFixed(2) },
+      { label: "Promo Code", value: "promoCode" },
+      { label: "Amount", value: (r) => Number(r.amount || 0).toFixed(2) },
+
+      { label: "Booking ID", value: (r) => String(r.booking || "") },
+      { label: "User ID", value: (r) => String(r.user || "") },
+      { label: "Car ID", value: (r) => String(r.car || "") },
+    ];
+
+    const parser = new Parser({ fields });
+    const csv = parser.parse(rows);
+
+    const filename = `cartime-invoices-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+
+    await logAdmin(req, {
+      action: "export_invoices_csv",
+      targetType: "Invoice",
+      targetId: null,
+      description: `Exported invoices CSV (${rows.length} rows)`,
+      meta: { rows: rows.length, filter },
+    });
+  } catch (err) {
+    console.error("Export invoices CSV error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+router.get("/reports/revenue-monthly.pdf", async (req, res) => {
+  try {
+    const month = String(req.query.month || "").trim(); // YYYY-MM
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ message: "month must be YYYY-MM (e.g. 2025-12)" });
+    }
+
+    const [yyyy, mm] = month.split("-").map(Number);
+    const start = new Date(yyyy, mm - 1, 1);
+    const end = new Date(yyyy, mm, 1); // next month
+
+    // Confirmed bookings revenue (recommended)
+    const agg = await Booking.aggregate([
+      {
+        $match: {
+          status: "confirmed",
+          createdAt: { $gte: start, $lt: end },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            y: { $year: "$createdAt" },
+            m: { $month: "$createdAt" },
+            d: { $dayOfMonth: "$createdAt" },
+          },
+          amount: { $sum: "$totalPrice" },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.y": 1, "_id.m": 1, "_id.d": 1 } },
+    ]);
+
+    // Build daily list for all days in month (including zeros)
+    const daysInMonth = new Date(yyyy, mm, 0).getDate();
+    const dailyRows = [];
+    let totalRevenue = 0;
+    let totalBookings = 0;
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const found = agg.find((x) => x._id.y === yyyy && x._id.m === mm && x._id.d === day);
+      const amount = found ? found.amount : 0;
+      const count = found ? found.count : 0;
+
+      totalRevenue += amount;
+      totalBookings += count;
+
+      dailyRows.push({
+        label: `${String(day).padStart(2, "0")}/${String(mm).padStart(2, "0")}/${yyyy}`,
+        amount,
+        count,
+      });
+    }
+
+    const totals = {
+      totalRevenue,
+      confirmedBookings: totalBookings,
+      avgRevenuePerDay: totalRevenue / Math.max(1, daysInMonth),
+      avgBookingsPerDay: Number((totalBookings / Math.max(1, daysInMonth)).toFixed(2)),
+    };
+
+    const monthLabel = start.toLocaleString("en-MY", { month: "long", year: "numeric" });
+    const pdf = await buildMonthlyRevenuePdfBuffer({ monthLabel, totals, dailyRows });
+
+    const filename = `cartime-revenue-${month}.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(pdf);
+
+    await logAdmin(req, {
+      action: "export_monthly_revenue_pdf",
+      targetType: "Report",
+      targetId: null,
+      description: `Exported monthly revenue PDF (${month})`,
+      meta: { month, totalRevenue, totalBookings },
+    });
+  } catch (err) {
+    console.error("Monthly revenue PDF error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
