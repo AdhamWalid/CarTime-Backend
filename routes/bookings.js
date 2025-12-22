@@ -6,7 +6,8 @@ const Booking = require("../models/Booking");
 const Car = require("../models/Car");
 const User = require("../models/User");
 const UserEvent = require("../models/UserEvent");
-
+const sendEmail = require("../utils/sendEmail"); // your util path
+const { bookingInvoiceHtml, invoiceNumber } = require("../utils/invoiceEmail");
 const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
@@ -170,7 +171,30 @@ router.post("/", async (req, res) => {
       },
     });
 
-    const renter = await User.findById(req.user.id).select("name expoPushToken");
+    const renter = await User.findById(req.user.id).select("name email expoPushToken");
+
+    // ✅ Email invoice to renter (do NOT fail booking if email fails)
+try {
+  if (renter?.email) {
+    const html = bookingInvoiceHtml({
+      renterName: renter.name,
+      renterEmail: renter.email,
+      booking,
+      nights,
+    });
+
+    await sendEmail({
+      to: renter.email,
+      subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
+      html,
+    });
+  } else {
+    console.log("No renter email found; skipping invoice email.");
+  }
+} catch (e) {
+  console.error("Invoice email failed:", e);
+}
+
     if (renter?.expoPushToken) {
       await sendExpoPushNotification(renter.expoPushToken, {
         title: "Booking Confirmed ✅",
@@ -178,6 +202,9 @@ router.post("/", async (req, res) => {
         data: { type: "BOOKING_CONFIRMED", bookingId: booking._id.toString() },
       });
     }
+
+
+
 
     if (car.ownerId) {
       const owner = await User.findById(car.ownerId).select("expoPushToken name");
