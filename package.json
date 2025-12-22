@@ -23,6 +23,7 @@
     "mongo-sanitize": "^1.1.0",
     "mongoose": "^9.0.1",
     "nodemailer": "^7.0.11",
+    "pdfkit": "^0.17.2",
     "qrcode": "^1.5.4",
     "resend": "^6.6.0",
     "speakeasy": "^2.0.0"

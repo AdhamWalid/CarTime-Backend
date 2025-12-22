@@ -8,6 +8,7 @@ const User = require("../models/User");
 const UserEvent = require("../models/UserEvent");
 const sendEmail = require("../utils/sendEmail"); // your util path
 const { bookingInvoiceHtml, invoiceNumber } = require("../utils/invoiceEmail");
+const { buildBookingInvoicePdfBuffer, invoiceNumber } = require("../utils/invoicePdf");
 const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
@@ -175,6 +176,7 @@ router.post("/", async (req, res) => {
 
     // ✅ Email invoice to renter (do NOT fail booking if email fails)
 try {
+  
   if (renter?.email) {
     const html = bookingInvoiceHtml({
       renterName: renter.name,
@@ -182,11 +184,23 @@ try {
       booking,
       nights,
     });
-
+    const pdfBuffer = await buildBookingInvoicePdfBuffer({
+      renterName: renter.name,
+      renterEmail: renter.email,
+      booking,
+      nights,
+    });
     await sendEmail({
       to: renter.email,
       subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
       html,
+      attachments: [
+        {
+          filename: `CarTime-Invoice-${invoiceNumber(booking._id)}.pdf`,
+          content: pdfBuffer,
+          contentType: "application/pdf",
+        },
+      ],
     });
   } else {
     console.log("No renter email found; skipping invoice email.");
