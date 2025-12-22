@@ -1229,7 +1229,17 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
     const m = parseMonth(req.query.month);
     if (!m) return res.status(400).json({ message: "Invalid month. Use YYYY-MM" });
 
-    const match = { status: "confirmed", createdAt: { $gte: m.start, $lt: m.end } };
+    // ✅ Overlap logic using rental dates (endDate is exclusive)
+    const match = {
+      status: "confirmed",
+      startDate: { $lt: m.end },  // starts before month ends
+      endDate: { $gt: m.start },  // ends after month starts (exclusive endDate)
+    };
+
+    // DEBUG (TEMP)
+    console.log("[monthly report]", req.query.month, match);
+    const matchedCount = await Booking.countDocuments(match);
+    console.log("[monthly report] matched bookings:", matchedCount);
 
     const agg = await Booking.aggregate([
       { $match: match },
@@ -1238,11 +1248,14 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
     const totals = agg[0] || { revenue: 0, bookings: 0 };
 
     const daysInMonth = new Date(m.yy, m.mm, 0).getDate();
+
+    // ✅ Daily revenue by PICKUP day (startDate)
     const dailyAgg = await Booking.aggregate([
       { $match: match },
-      { $group: { _id: { day: { $dayOfMonth: "$createdAt" } }, revenue: { $sum: "$totalPrice" } } },
+      { $group: { _id: { day: { $dayOfMonth: "$startDate" } }, revenue: { $sum: "$totalPrice" } } },
       { $sort: { "_id.day": 1 } },
     ]);
+
     const dailyMap = new Map(dailyAgg.map(x => [x._id.day, x.revenue]));
     const series = Array.from({ length: daysInMonth }).map((_, i) => ({
       label: String(i + 1).padStart(2, "0"),
@@ -1255,6 +1268,7 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
       { $sort: { revenue: -1 } },
       { $limit: 20 },
     ]);
+
     const topCarsRows = topCarsAgg.map(x => ({
       car: `${x._id.carTitle || "Car"}${x._id.carPlate ? ` • ${x._id.carPlate}` : ""}`,
       bookings: x.count,
@@ -1286,5 +1300,4 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
     res.status(500).json({ message: "Server error", error: String(err?.message || err) });
   }
 });
-
 module.exports = router;

@@ -28,12 +28,13 @@ const bookingSchema = new mongoose.Schema(
       enum: ["pending", "paid", "failed"],
       default: "paid",
     },
+    
   },
   { timestamps: true }
 );
 
 bookingSchema.index({
-  carId: 1,
+  car: 1,
   startDate: 1,
   endDate: 1,
   status: 1,
