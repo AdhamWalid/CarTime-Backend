@@ -1228,181 +1228,23 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
     const m = parseMonth(req.query.month);
     if (!m) return res.status(400).json({ message: "Invalid month. Use YYYY-MM" });
 
-    // Confirmed bookings in month (you can switch createdAt -> startDate depending on your accounting logic)
-    const match = {
-      status: "confirmed",
-      createdAt: { $gte: m.start, $lt: m.end },
-    };
-
-    const agg = await Booking.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: null,
-          revenue: { $sum: "$totalPrice" },
-          bookings: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const totals = agg[0] || { revenue: 0, bookings: 0 };
-    const daysInMonth = new Date(m.yy, m.mm, 0).getDate();
-    const avgPerDay = totals.bookings / Math.max(daysInMonth, 1);
-
-    // Daily revenue series
-    const dailyAgg = await Booking.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { day: { $dayOfMonth: "$createdAt" } },
-          revenue: { $sum: "$totalPrice" },
-        },
-      },
-      { $sort: { "_id.day": 1 } },
-    ]);
-
-    const dailyMap = new Map(dailyAgg.map((x) => [x._id.day, x.revenue]));
-    const series = Array.from({ length: daysInMonth }).map((_, i) => {
-      const day = i + 1;
-      return {
-        label: String(day).padStart(2, "0"),
-        value: Number(dailyMap.get(day) || 0),
-      };
-    });
-
-    // “Top cars” from invoice fields / booking fields
-    const topCarsAgg = await Booking.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { carTitle: "$carTitle", carPlate: "$carPlate" },
-          revenue: { $sum: "$totalPrice" },
-          count: { $sum: 1 },
-        },
-      },
-      { $sort: { revenue: -1 } },
-      { $limit: 6 },
-    ]);
-
-    const topCarsRows = topCarsAgg.map((x) => ({
-      car: `${x._id.carTitle || "Car"}${x._id.carPlate ? ` • ${x._id.carPlate}` : ""}`,
-      bookings: x.count,
-      revenue: formatMYR(x.revenue),
-    }));
-
-    // Optional platform split example (change percentages to your real logic)
-    const platformPct = 0.12;
-    const platformCut = totals.revenue * platformPct;
-    const ownerCut = totals.revenue - platformCut;
-
-    // --- PDF response headers ---
     const fileName = `cartime-revenue-${req.query.month}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
 
-    // --- PDFKit doc ---
-    const doc = new PDFDocument({
-      size: "A4",
-      margins: { top: 40, left: 40, right: 40, bottom: 50 },
-      info: {
-        Title: `CarTime Monthly Revenue Summary - ${req.query.month}`,
-        Author: "CarTime Admin",
-      },
+    const pdfBuffer = await buildMonthlyRevenuePdfBuffer({
+      month: req.query.month,
+      yy: m.yy,
+      mm: m.mm,
+      start: m.start,
+      end: m.end,
     });
 
-    // Pipe to response
-    doc.pipe(res);
-
-    // Page 1 content
-    drawHeader(doc, {
-      title: "Monthly Revenue Summary",
-      subtitle: `${monthLabel(m.yy, m.mm)} • Confirmed bookings (created in month)`,
-      rightTag: "FINANCE",
-    });
-
-    // KPI cards row
-    const marginX = 40;
-    const gap = 12;
-    const cardW = (doc.page.width - marginX * 2 - gap * 3) / 4;
-    const y0 = doc.y;
-
-    card(doc, marginX + 0 * (cardW + gap), y0, cardW, 70, {
-      title: "Total revenue",
-      value: formatMYR(totals.revenue),
-      sub: `Month: ${req.query.month}`,
-      accent: "#fbbf24",
-    });
-    card(doc, marginX + 1 * (cardW + gap), y0, cardW, 70, {
-      title: "Bookings",
-      value: String(totals.bookings),
-      sub: `Avg/day: ${avgPerDay.toFixed(2)}`,
-      accent: "#60a5fa",
-    });
-    card(doc, marginX + 2 * (cardW + gap), y0, cardW, 70, {
-      title: "Platform cut",
-      value: formatMYR(platformCut),
-      sub: `Rate: ${(platformPct * 100).toFixed(1)}%`,
-      accent: "#22c55e",
-    });
-    card(doc, marginX + 3 * (cardW + gap), y0, cardW, 70, {
-      title: "Owner payout",
-      value: formatMYR(ownerCut),
-      sub: "Estimated",
-      accent: "#fb7185",
-    });
-
-    doc.y = y0 + 86;
-    drawDivider(doc, doc.y);
-    doc.y += 14;
-
-    // Chart + table side by side
-    const panelGap = 12;
-    const leftW = (doc.page.width - marginX * 2 - panelGap) * 0.58;
-    const rightW = (doc.page.width - marginX * 2 - panelGap) - leftW;
-
-    drawBarChart(doc, marginX, doc.y, leftW, 240, series);
-
-    drawTable(
-      doc,
-      marginX + leftW + panelGap,
-      doc.y,
-      rightW,
-      topCarsRows.length ? topCarsRows : [{ car: "—", bookings: "—", revenue: "—" }],
-      {
-        title: "Top Cars",
-        cols: [
-          { key: "car", label: "Car", w: rightW - 24 - 54 - 84, align: "left" },
-          { key: "bookings", label: "Bk", w: 54, align: "right" },
-          { key: "revenue", label: "Revenue", w: 84, align: "right" },
-        ],
-      }
-    );
-
-    doc.y += 256;
-
-    // Notes panel
-    doc.save();
-    doc.roundedRect(marginX, doc.y, doc.page.width - marginX * 2, 92, 14).fill("#0b1220");
-    doc.roundedRect(marginX, doc.y, doc.page.width - marginX * 2, 92, 14).lineWidth(1).stroke("#1f2a3d");
-
-    doc.fillColor("#e5e7eb").font("Helvetica-Bold").fontSize(11).text("Notes", marginX + 14, doc.y + 12);
-    doc.fillColor("#94a3b8").font("Helvetica").fontSize(9).text(
-      "• Data source: Confirmed bookings in selected month\n" +
-        "• Totals are computed from Booking.totalPrice\n" +
-        "• Platform/Owner split shown is an estimate (adjust to your real policy)\n" +
-        "• For accounting, export CSV from Invoices page to reconcile line items",
-      marginX + 14,
-      doc.y + 30
-    );
-    doc.restore();
-
-    // Footer (single page)
-    addFooter(doc, 1, 1);
-
-    doc.end();
+    res.send(pdfBuffer);
   } catch (err) {
     console.error("Monthly revenue PDF error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
 module.exports = router;
