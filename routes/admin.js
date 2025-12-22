@@ -15,7 +15,7 @@ const qrcode = require("qrcode");
 const jwt = require("jsonwebtoken");
 const router = express.Router();
 const { Parser } = require("json2csv");
-const { buildMonthlyRevenuePdfBuffer } = require("../utils/buildMonthlyRevenuePdf");
+const { buildMonthlyRevenuePdfBuffer } = require("../utils/buildMonthlyRevenuePdfBuffer");
 
 // near top of routes/admin.js
 const fetch = global.fetch;
@@ -1229,22 +1229,61 @@ router.get("/reports/revenue-monthly.pdf", async (req, res) => {
     const m = parseMonth(req.query.month);
     if (!m) return res.status(400).json({ message: "Invalid month. Use YYYY-MM" });
 
-    const fileName = `cartime-revenue-${req.query.month}.pdf`;
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    const match = { status: "confirmed", createdAt: { $gte: m.start, $lt: m.end } };
 
-    const pdfBuffer = await buildMonthlyRevenuePdfBuffer({
+    const agg = await Booking.aggregate([
+      { $match: match },
+      { $group: { _id: null, revenue: { $sum: "$totalPrice" }, bookings: { $sum: 1 } } },
+    ]);
+    const totals = agg[0] || { revenue: 0, bookings: 0 };
+
+    const daysInMonth = new Date(m.yy, m.mm, 0).getDate();
+    const dailyAgg = await Booking.aggregate([
+      { $match: match },
+      { $group: { _id: { day: { $dayOfMonth: "$createdAt" } }, revenue: { $sum: "$totalPrice" } } },
+      { $sort: { "_id.day": 1 } },
+    ]);
+    const dailyMap = new Map(dailyAgg.map(x => [x._id.day, x.revenue]));
+    const series = Array.from({ length: daysInMonth }).map((_, i) => ({
+      label: String(i + 1).padStart(2, "0"),
+      value: Number(dailyMap.get(i + 1) || 0),
+    }));
+
+    const topCarsAgg = await Booking.aggregate([
+      { $match: match },
+      { $group: { _id: { carTitle: "$carTitle", carPlate: "$carPlate" }, revenue: { $sum: "$totalPrice" }, count: { $sum: 1 } } },
+      { $sort: { revenue: -1 } },
+      { $limit: 20 },
+    ]);
+    const topCarsRows = topCarsAgg.map(x => ({
+      car: `${x._id.carTitle || "Car"}${x._id.carPlate ? ` • ${x._id.carPlate}` : ""}`,
+      bookings: x.count,
+      revenue: formatMYR(x.revenue),
+    }));
+
+    const platformPct = 0.12;
+    const platformCut = totals.revenue * platformPct;
+    const ownerCut = totals.revenue - platformCut;
+
+    const buf = await buildMonthlyRevenuePdfBuffer({
       month: req.query.month,
       yy: m.yy,
       mm: m.mm,
-      start: m.start,
-      end: m.end,
+      totals,
+      platformPct,
+      platformCut,
+      ownerCut,
+      series,
+      topCarsRows,
     });
 
-    res.send(pdfBuffer);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="cartime-revenue-${req.query.month}.pdf"`);
+    res.setHeader("Content-Length", String(buf.length));
+    res.send(buf);
   } catch (err) {
     console.error("Monthly revenue PDF error:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: String(err?.message || err) });
   }
 });
 
