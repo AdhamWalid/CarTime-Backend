@@ -1259,17 +1259,30 @@ res.setHeader("X-Report-Route", "HIT-" + Date.now());
     const daysInMonth = new Date(m.yy, m.mm, 0).getDate();
 
     // ✅ Daily revenue by PICKUP day (startDate)
-    const dailyAgg = await Booking.aggregate([
-      { $match: match },
-      { $group: { _id: { day: { $dayOfMonth: "$startDate" } }, revenue: { $sum: "$totalPrice" } } },
-      { $sort: { "_id.day": 1 } },
-    ]);
+const dailyAgg = await Booking.aggregate([
+  { $match: match },
+  {
+    $group: {
+      _id: { day: { $dayOfMonth: "$startDate" } }, // pickup day
+      revenue: { $sum: "$totalPrice" },
+      count: { $sum: 1 },
+    },
+  },
+  { $sort: { "_id.day": 1 } },
+]);
 
-    const dailyMap = new Map(dailyAgg.map(x => [x._id.day, x.revenue]));
-    const series = Array.from({ length: daysInMonth }).map((_, i) => ({
-      label: String(i + 1).padStart(2, "0"),
-      value: Number(dailyMap.get(i + 1) || 0),
-    }));
+const dailyMap = new Map(dailyAgg.map((x) => [x._id.day, { revenue: x.revenue, count: x.count }]));
+
+const series = Array.from({ length: daysInMonth }).map((_, i) => {
+  const day = i + 1;
+  const v = dailyMap.get(day) || { revenue: 0, count: 0 };
+  return {
+    day, // number
+    label: String(day).padStart(2, "0"),
+    revenue: Number(v.revenue || 0),
+    count: Number(v.count || 0),
+  };
+});
 
     const topCarsAgg = await Booking.aggregate([
       { $match: match },
