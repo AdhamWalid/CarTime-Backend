@@ -8,6 +8,7 @@ const UserEvent = require("../models/UserEvent");
 const PromoCode = require("../models/PromoCode");
 const Invoice = require("../models/invoice");
 const mongoose = require("mongoose");
+const PDFDocument = require("pdfkit");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
