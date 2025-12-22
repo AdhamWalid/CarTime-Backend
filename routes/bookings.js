@@ -1,7 +1,7 @@
 // backend/routes/bookings.js
 const express = require("express");
 const router = express.Router();
-
+const { uploadPdfToGridFS } = require("../utils/uploadPdfToGridFS");
 const Booking = require("../models/Booking");
 const Car = require("../models/Car");
 const User = require("../models/User");
