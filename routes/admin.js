@@ -1237,8 +1237,12 @@ res.setHeader("X-Report-Route", "HIT-" + Date.now());
     // ✅ Overlap logic using rental dates (endDate is exclusive)
       const match = {
         status: "confirmed",
-        paymentStatus: "paid",
-        createdAt: { $gte: m.start, $lt: m.end },
+        // TEMP: include pending understanding you haven’t integrated payment fully
+        paymentStatus: { $in: ["paid", "pending"] },
+
+        // Month overlap logic (endDate exclusive):
+        startDate: { $lt: m.end },  // pickup before month ends
+        endDate:   { $gt: m.start } // checkout after month starts
       };
 
     // DEBUG (TEMP)
