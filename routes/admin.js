@@ -864,63 +864,6 @@ router.get("/invoices", async (req, res) => {
 });
 
 
-router.get("/invoices/:id", async (req, res) => {
-  try {
-    const inv = await Invoice.findById(req.params.id)
-      .populate("user", "name email role")
-      .populate("booking")
-      .lean();
-
-    if (!inv) return res.status(404).json({ message: "Invoice not found" });
-
-    res.json(inv);
-  } catch (err) {
-    console.error("Admin invoice detail error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-router.get("/invoices/:id/pdf", async (req, res) => {
-  try {
-    const inv = await Invoice.findById(req.params.id).lean();
-    if (!inv) return res.status(404).json({ message: "Invoice not found" });
-
-    if (inv?.pdf?.storage !== "gridfs" || !inv?.pdf?.fileId) {
-      return res.status(404).json({ message: "PDF not available" });
-    }
-
-    const bucket = req.app.locals.gridfsBucket;
-    if (!bucket) {
-      return res.status(500).json({ message: "GridFS bucket not initialized" });
-    }
-
-    // Ensure ObjectId
-    const fileId =
-      typeof inv.pdf.fileId === "string" ? new mongoose.Types.ObjectId(inv.pdf.fileId) : inv.pdf.fileId;
-
-    res.setHeader("Content-Type", inv.pdf.mime || "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${inv.pdf.filename || `CarTime-Invoice-${inv.invoiceNumber}.pdf`}"`
-    );
-
-    await logAdmin(req, {
-      action: "download_invoice_pdf",
-      targetType: "Invoice",
-      targetId: inv._id,
-      description: `Downloaded invoice PDF ${inv.invoiceNumber}`,
-      meta: { invoiceNumber: inv.invoiceNumber, bookingId: inv.booking?.toString?.() },
-    });
-
-    bucket.openDownloadStream(fileId).pipe(res);
-  } catch (err) {
-    console.error("Admin invoice pdf error:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-
-// GET /api/admin/invoices/export.csv?q=...&status=...&from=...&to=...
 router.get("/invoices/export.csv", async (req, res) => {
   try {
     const { q, bookingId, userId, carId, status, from, to } = req.query;
@@ -1000,6 +943,70 @@ router.get("/invoices/export.csv", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+
+router.get("/invoices/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid invoice id" });
+    }
+
+    const inv = await Invoice.findById(id)
+      .populate("user", "name email role")
+      .populate("booking")
+      .lean();
+
+    if (!inv) return res.status(404).json({ message: "Invoice not found" });
+    res.json(inv);
+  } catch (err) {
+    console.error("Admin invoice detail error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/invoices/:id/pdf", async (req, res) => {
+  try {
+    const inv = await Invoice.findById(req.params.id).lean();
+    if (!inv) return res.status(404).json({ message: "Invoice not found" });
+
+    if (inv?.pdf?.storage !== "gridfs" || !inv?.pdf?.fileId) {
+      return res.status(404).json({ message: "PDF not available" });
+    }
+
+    const bucket = req.app.locals.gridfsBucket;
+    if (!bucket) {
+      return res.status(500).json({ message: "GridFS bucket not initialized" });
+    }
+
+    // Ensure ObjectId
+    const fileId =
+      typeof inv.pdf.fileId === "string" ? new mongoose.Types.ObjectId(inv.pdf.fileId) : inv.pdf.fileId;
+
+    res.setHeader("Content-Type", inv.pdf.mime || "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${inv.pdf.filename || `CarTime-Invoice-${inv.invoiceNumber}.pdf`}"`
+    );
+
+    await logAdmin(req, {
+      action: "download_invoice_pdf",
+      targetType: "Invoice",
+      targetId: inv._id,
+      description: `Downloaded invoice PDF ${inv.invoiceNumber}`,
+      meta: { invoiceNumber: inv.invoiceNumber, bookingId: inv.booking?.toString?.() },
+    });
+
+    bucket.openDownloadStream(fileId).pipe(res);
+  } catch (err) {
+    console.error("Admin invoice pdf error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// GET /api/admin/invoices/export.csv?q=...&status=...&from=...&to=...
 
 function clamp(n, a, b) {
   return Math.max(a, Math.min(b, n));
