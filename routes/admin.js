@@ -1000,87 +1000,409 @@ router.get("/invoices/export.csv", async (req, res) => {
   }
 });
 
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
 
+function formatMYR(n) {
+  const v = Number(n || 0);
+  try {
+    return `RM ${v.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  } catch {
+    return `RM ${v.toFixed(2)}`;
+  }
+}
+
+function parseMonth(monthStr) {
+  // monthStr: "2025-12"
+  const [yy, mm] = String(monthStr || "").split("-").map(Number);
+  if (!yy || !mm || mm < 1 || mm > 12) return null;
+
+  const start = new Date(yy, mm - 1, 1, 0, 0, 0, 0);
+  const end = new Date(yy, mm, 1, 0, 0, 0, 0); // next month
+  return { start, end, yy, mm };
+}
+
+function monthLabel(yy, mm) {
+  const d = new Date(yy, mm - 1, 1);
+  return d.toLocaleDateString("en-MY", { month: "long", year: "numeric" });
+}
+
+/** --- PDF Drawing helpers (premium style) --- **/
+function drawPill(doc, x, y, text, opts = {}) {
+  const {
+    bg = "#0b1220",
+    border = "#2b3a55",
+    color = "#dbeafe",
+    padX = 10,
+    h = 20,
+    radius = 10,
+    fontSize = 9,
+  } = opts;
+
+  doc.save();
+  const w = doc.widthOfString(text, { fontSize }) + padX * 2;
+  doc.roundedRect(x, y, w, h, radius).fill(bg);
+  doc.roundedRect(x, y, w, h, radius).lineWidth(1).stroke(border);
+  doc.fillColor(color).fontSize(fontSize).text(text, x + padX, y + 5, { lineBreak: false });
+  doc.restore();
+  return w;
+}
+
+function card(doc, x, y, w, h, { title, value, sub, accent = "#fbbf24" }) {
+  doc.save();
+
+  // Card base
+  doc.roundedRect(x, y, w, h, 14).fill("#0b1220");
+  doc.roundedRect(x, y, w, h, 14).lineWidth(1).stroke("#1f2a3d");
+
+  // Accent bar
+  doc.roundedRect(x, y, 6, h, 12).fill(accent);
+
+  doc.fillColor("#94a3b8").fontSize(9).text(title, x + 16, y + 10);
+  doc.fillColor("#e5e7eb").fontSize(16).font("Helvetica-Bold").text(value, x + 16, y + 26);
+  doc.font("Helvetica").fillColor("#64748b").fontSize(9).text(sub || "", x + 16, y + 48);
+
+  doc.restore();
+}
+
+function drawHeader(doc, { title, subtitle, rightTag }) {
+  const pageW = doc.page.width;
+  const margin = 40;
+
+  // Top gradient-ish blocks (PDFKit doesn’t do real gradients nicely; fake it with layered rects)
+  doc.save();
+  doc.rect(0, 0, pageW, 120).fill("#050816");
+  doc.rect(0, 0, pageW, 120).opacity(0.18).fill("#fbbf24").opacity(1);
+
+  // “Glow” blobs
+  doc.opacity(0.22).circle(90, 30, 90).fill("#fbbf24");
+  doc.opacity(0.12).circle(pageW - 120, 50, 110).fill("#60a5fa");
+  doc.opacity(1);
+
+  // Branding
+  doc.fillColor("#e5e7eb").font("Helvetica-Bold").fontSize(18).text("CarTime", margin, 28);
+  doc.fillColor("#94a3b8").font("Helvetica").fontSize(10).text("Admin Reports", margin, 50);
+
+  // Title
+  doc.fillColor("#f8fafc").font("Helvetica-Bold").fontSize(16).text(title, margin, 78);
+  doc.fillColor("#cbd5e1").font("Helvetica").fontSize(9).text(subtitle, margin, 98);
+
+  // Right pill
+  const tag = rightTag || "CONFIDENTIAL";
+  const tagW = drawPill(doc, pageW - margin - 140, 36, tag, {
+    bg: "#0b1220",
+    border: "#334155",
+    color: "#fde68a",
+  });
+  // tiny “printed at”
+  doc.fillColor("#94a3b8").fontSize(8).text(`Generated: ${new Date().toLocaleString("en-MY")}`, pageW - margin - 220, 62, {
+    width: 220,
+    align: "right",
+  });
+
+  doc.restore();
+
+  // Move cursor below header
+  doc.y = 140;
+}
+
+function drawDivider(doc, y) {
+  doc.save();
+  doc.moveTo(40, y).lineTo(doc.page.width - 40, y).lineWidth(1).stroke("#1f2a3d");
+  doc.restore();
+}
+
+function drawBarChart(doc, x, y, w, h, series) {
+  // series: [{ label: "01", value: 123 }, ...]
+  doc.save();
+
+  // Panel
+  doc.roundedRect(x, y, w, h, 14).fill("#0b1220");
+  doc.roundedRect(x, y, w, h, 14).lineWidth(1).stroke("#1f2a3d");
+
+  doc.fillColor("#e5e7eb").font("Helvetica-Bold").fontSize(11).text("Daily Revenue", x + 14, y + 12);
+  doc.fillColor("#64748b").font("Helvetica").fontSize(9).text("Confirmed bookings only", x + 14, y + 28);
+
+  const maxV = Math.max(...series.map((s) => Number(s.value || 0)), 1);
+  const innerX = x + 12;
+  const innerY = y + 46;
+  const innerW = w - 24;
+  const innerH = h - 62;
+
+  const n = series.length || 1;
+  const gap = 4;
+  const barW = clamp((innerW - gap * (n - 1)) / n, 6, 18);
+
+  // grid line
+  doc.moveTo(innerX, innerY + innerH).lineTo(innerX + innerW, innerY + innerH).lineWidth(1).stroke("#122033");
+
+  // Bars
+  series.forEach((s, i) => {
+    const v = Number(s.value || 0);
+    const barH = (v / maxV) * innerH;
+    const bx = innerX + i * (barW + gap);
+    const by = innerY + innerH - barH;
+
+    // bar (gold with subtle blue highlight)
+    doc.roundedRect(bx, by, barW, barH, 4).fill("#fbbf24");
+    doc.opacity(0.25).roundedRect(bx, by, barW, barH * 0.35, 4).fill("#60a5fa").opacity(1);
+
+    // labels (every ~5 to avoid clutter)
+    if (n <= 16 || i % 3 === 0) {
+      doc.fillColor("#64748b").fontSize(7).text(String(s.label), bx - 2, innerY + innerH + 6, {
+        width: barW + 4,
+        align: "center",
+      });
+    }
+  });
+
+  doc.restore();
+}
+
+function drawTable(doc, x, y, w, rows, opts = {}) {
+  const { title = "Top Breakdown", cols = [] } = opts;
+  doc.save();
+
+  // Panel
+  const h = 44 + rows.length * 22 + 14;
+  doc.roundedRect(x, y, w, h, 14).fill("#0b1220");
+  doc.roundedRect(x, y, w, h, 14).lineWidth(1).stroke("#1f2a3d");
+
+  doc.fillColor("#e5e7eb").font("Helvetica-Bold").fontSize(11).text(title, x + 14, y + 12);
+  doc.fillColor("#64748b").fontSize(9).text("Sorted by revenue", x + 14, y + 28);
+
+  // Header row
+  const headerY = y + 46;
+  doc.roundedRect(x + 12, headerY, w - 24, 22, 10).fill("#0a1628");
+  doc.fillColor("#94a3b8").fontSize(8);
+
+  const colXs = [];
+  let cx = x + 18;
+  cols.forEach((c) => {
+    colXs.push(cx);
+    doc.text(c.label, cx, headerY + 6, { width: c.w, align: c.align || "left" });
+    cx += c.w;
+  });
+
+  // Data rows
+  let rowY = headerY + 26;
+  rows.forEach((r, idx) => {
+    if (idx % 2 === 0) {
+      doc.roundedRect(x + 12, rowY - 2, w - 24, 20, 10).opacity(0.45).fill("#071022").opacity(1);
+    }
+    doc.fillColor("#e2e8f0").fontSize(9);
+
+    cols.forEach((c, i) => {
+      const val = r[c.key] ?? "—";
+      doc.text(String(val), colXs[i], rowY + 3, { width: c.w, align: c.align || "left" });
+    });
+
+    rowY += 22;
+  });
+
+  doc.restore();
+  return y + h;
+}
+
+function addFooter(doc, pageNum, totalPages) {
+  const margin = 40;
+  const y = doc.page.height - 34;
+
+  doc.save();
+  doc.fillColor("#64748b").fontSize(8);
+  doc.text("CarTime • Monthly Revenue Summary", margin, y, { continued: true });
+  doc.text(" • Internal use only", { continued: false });
+
+  doc.fillColor("#94a3b8").fontSize(8).text(`Page ${pageNum} of ${totalPages}`, doc.page.width - margin - 80, y, {
+    width: 80,
+    align: "right",
+  });
+
+  doc.restore();
+}
+
+/** --- ROUTE --- **/
 router.get("/reports/revenue-monthly.pdf", async (req, res) => {
   try {
-    const month = String(req.query.month || "").trim(); // YYYY-MM
-    if (!/^\d{4}-\d{2}$/.test(month)) {
-      return res.status(400).json({ message: "month must be YYYY-MM (e.g. 2025-12)" });
-    }
+    const m = parseMonth(req.query.month);
+    if (!m) return res.status(400).json({ message: "Invalid month. Use YYYY-MM" });
 
-    const [yyyy, mm] = month.split("-").map(Number);
-    const start = new Date(yyyy, mm - 1, 1);
-    const end = new Date(yyyy, mm, 1); // next month
+    // Confirmed bookings in month (you can switch createdAt -> startDate depending on your accounting logic)
+    const match = {
+      status: "confirmed",
+      createdAt: { $gte: m.start, $lt: m.end },
+    };
 
-    // Confirmed bookings revenue (recommended)
     const agg = await Booking.aggregate([
-      {
-        $match: {
-          status: "confirmed",
-          createdAt: { $gte: start, $lt: end },
-        },
-      },
+      { $match: match },
       {
         $group: {
-          _id: {
-            y: { $year: "$createdAt" },
-            m: { $month: "$createdAt" },
-            d: { $dayOfMonth: "$createdAt" },
-          },
-          amount: { $sum: "$totalPrice" },
+          _id: null,
+          revenue: { $sum: "$totalPrice" },
+          bookings: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const totals = agg[0] || { revenue: 0, bookings: 0 };
+    const daysInMonth = new Date(m.yy, m.mm, 0).getDate();
+    const avgPerDay = totals.bookings / Math.max(daysInMonth, 1);
+
+    // Daily revenue series
+    const dailyAgg = await Booking.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { day: { $dayOfMonth: "$createdAt" } },
+          revenue: { $sum: "$totalPrice" },
+        },
+      },
+      { $sort: { "_id.day": 1 } },
+    ]);
+
+    const dailyMap = new Map(dailyAgg.map((x) => [x._id.day, x.revenue]));
+    const series = Array.from({ length: daysInMonth }).map((_, i) => {
+      const day = i + 1;
+      return {
+        label: String(day).padStart(2, "0"),
+        value: Number(dailyMap.get(day) || 0),
+      };
+    });
+
+    // “Top cars” from invoice fields / booking fields
+    const topCarsAgg = await Booking.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { carTitle: "$carTitle", carPlate: "$carPlate" },
+          revenue: { $sum: "$totalPrice" },
           count: { $sum: 1 },
         },
       },
-      { $sort: { "_id.y": 1, "_id.m": 1, "_id.d": 1 } },
+      { $sort: { revenue: -1 } },
+      { $limit: 6 },
     ]);
 
-    // Build daily list for all days in month (including zeros)
-    const daysInMonth = new Date(yyyy, mm, 0).getDate();
-    const dailyRows = [];
-    let totalRevenue = 0;
-    let totalBookings = 0;
+    const topCarsRows = topCarsAgg.map((x) => ({
+      car: `${x._id.carTitle || "Car"}${x._id.carPlate ? ` • ${x._id.carPlate}` : ""}`,
+      bookings: x.count,
+      revenue: formatMYR(x.revenue),
+    }));
 
-    for (let day = 1; day <= daysInMonth; day++) {
-      const found = agg.find((x) => x._id.y === yyyy && x._id.m === mm && x._id.d === day);
-      const amount = found ? found.amount : 0;
-      const count = found ? found.count : 0;
+    // Optional platform split example (change percentages to your real logic)
+    const platformPct = 0.12;
+    const platformCut = totals.revenue * platformPct;
+    const ownerCut = totals.revenue - platformCut;
 
-      totalRevenue += amount;
-      totalBookings += count;
-
-      dailyRows.push({
-        label: `${String(day).padStart(2, "0")}/${String(mm).padStart(2, "0")}/${yyyy}`,
-        amount,
-        count,
-      });
-    }
-
-    const totals = {
-      totalRevenue,
-      confirmedBookings: totalBookings,
-      avgRevenuePerDay: totalRevenue / Math.max(1, daysInMonth),
-      avgBookingsPerDay: Number((totalBookings / Math.max(1, daysInMonth)).toFixed(2)),
-    };
-
-    const monthLabel = start.toLocaleString("en-MY", { month: "long", year: "numeric" });
-    const pdf = await buildMonthlyRevenuePdfBuffer({ monthLabel, totals, dailyRows });
-
-    const filename = `cartime-revenue-${month}.pdf`;
+    // --- PDF response headers ---
+    const fileName = `cartime-revenue-${req.query.month}.pdf`;
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(pdf);
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
 
-    await logAdmin(req, {
-      action: "export_monthly_revenue_pdf",
-      targetType: "Report",
-      targetId: null,
-      description: `Exported monthly revenue PDF (${month})`,
-      meta: { month, totalRevenue, totalBookings },
+    // --- PDFKit doc ---
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 40, left: 40, right: 40, bottom: 50 },
+      info: {
+        Title: `CarTime Monthly Revenue Summary - ${req.query.month}`,
+        Author: "CarTime Admin",
+      },
     });
+
+    // Pipe to response
+    doc.pipe(res);
+
+    // Page 1 content
+    drawHeader(doc, {
+      title: "Monthly Revenue Summary",
+      subtitle: `${monthLabel(m.yy, m.mm)} • Confirmed bookings (created in month)`,
+      rightTag: "FINANCE",
+    });
+
+    // KPI cards row
+    const marginX = 40;
+    const gap = 12;
+    const cardW = (doc.page.width - marginX * 2 - gap * 3) / 4;
+    const y0 = doc.y;
+
+    card(doc, marginX + 0 * (cardW + gap), y0, cardW, 70, {
+      title: "Total revenue",
+      value: formatMYR(totals.revenue),
+      sub: `Month: ${req.query.month}`,
+      accent: "#fbbf24",
+    });
+    card(doc, marginX + 1 * (cardW + gap), y0, cardW, 70, {
+      title: "Bookings",
+      value: String(totals.bookings),
+      sub: `Avg/day: ${avgPerDay.toFixed(2)}`,
+      accent: "#60a5fa",
+    });
+    card(doc, marginX + 2 * (cardW + gap), y0, cardW, 70, {
+      title: "Platform cut",
+      value: formatMYR(platformCut),
+      sub: `Rate: ${(platformPct * 100).toFixed(1)}%`,
+      accent: "#22c55e",
+    });
+    card(doc, marginX + 3 * (cardW + gap), y0, cardW, 70, {
+      title: "Owner payout",
+      value: formatMYR(ownerCut),
+      sub: "Estimated",
+      accent: "#fb7185",
+    });
+
+    doc.y = y0 + 86;
+    drawDivider(doc, doc.y);
+    doc.y += 14;
+
+    // Chart + table side by side
+    const panelGap = 12;
+    const leftW = (doc.page.width - marginX * 2 - panelGap) * 0.58;
+    const rightW = (doc.page.width - marginX * 2 - panelGap) - leftW;
+
+    drawBarChart(doc, marginX, doc.y, leftW, 240, series);
+
+    drawTable(
+      doc,
+      marginX + leftW + panelGap,
+      doc.y,
+      rightW,
+      topCarsRows.length ? topCarsRows : [{ car: "—", bookings: "—", revenue: "—" }],
+      {
+        title: "Top Cars",
+        cols: [
+          { key: "car", label: "Car", w: rightW - 24 - 54 - 84, align: "left" },
+          { key: "bookings", label: "Bk", w: 54, align: "right" },
+          { key: "revenue", label: "Revenue", w: 84, align: "right" },
+        ],
+      }
+    );
+
+    doc.y += 256;
+
+    // Notes panel
+    doc.save();
+    doc.roundedRect(marginX, doc.y, doc.page.width - marginX * 2, 92, 14).fill("#0b1220");
+    doc.roundedRect(marginX, doc.y, doc.page.width - marginX * 2, 92, 14).lineWidth(1).stroke("#1f2a3d");
+
+    doc.fillColor("#e5e7eb").font("Helvetica-Bold").fontSize(11).text("Notes", marginX + 14, doc.y + 12);
+    doc.fillColor("#94a3b8").font("Helvetica").fontSize(9).text(
+      "• Data source: Confirmed bookings in selected month\n" +
+        "• Totals are computed from Booking.totalPrice\n" +
+        "• Platform/Owner split shown is an estimate (adjust to your real policy)\n" +
+        "• For accounting, export CSV from Invoices page to reconcile line items",
+      marginX + 14,
+      doc.y + 30
+    );
+    doc.restore();
+
+    // Footer (single page)
+    addFooter(doc, 1, 1);
+
+    doc.end();
   } catch (err) {
     console.error("Monthly revenue PDF error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
-
 module.exports = router;
