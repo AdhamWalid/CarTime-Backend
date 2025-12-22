@@ -6,6 +6,7 @@ const Booking = require("../models/Booking");
 const Car = require("../models/Car");
 const User = require("../models/User");
 const UserEvent = require("../models/UserEvent");
+const Invoice = require("../models/invoice")
 const sendEmail = require("../utils/sendEmail"); // your util path
 const { bookingInvoiceHtml } = require("../utils/invoiceEmail");
 const { buildBookingInvoicePdfBuffer } = require("../utils/invoicePdf");
