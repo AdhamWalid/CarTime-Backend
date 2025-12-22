@@ -1,43 +1,41 @@
+// models/Invoice.js
 const mongoose = require("mongoose");
 
 const InvoiceSchema = new mongoose.Schema(
   {
-    invoiceNumber: { type: String, required: true, unique: true, index: true },
+    invoiceNumber: { type: String, required: true, unique: true },
 
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", required: true, index: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true }, // renter
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
     car: { type: mongoose.Schema.Types.ObjectId, ref: "Car", required: true, index: true },
 
-    renterName: String,
-    renterEmail: String,
-    contactPhone: String,
+    renterName: { type: String, default: "" },
+    renterEmail: { type: String, default: "", index: true },
+    contactPhone: { type: String, default: "" },
 
-    carTitle: String,
-    carPlate: String,
-    pickupCity: String,
+    carTitle: { type: String, default: "" },
+    carPlate: { type: String, default: "" },
+    pickupCity: { type: String, default: "" },
 
-    startDate: Date,
-    endDate: Date,
-    nights: Number,
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true },
+    nights: { type: Number, default: 1 },
 
     currency: { type: String, default: "MYR" },
-    amount: { type: Number, required: true }, // final amount
-    subtotal: { type: Number, required: true },
+    subtotal: { type: Number, default: 0 },
     discount: { type: Number, default: 0 },
     promoCode: { type: String, default: null },
+    amount: { type: Number, default: 0 },
 
-    status: { type: String, enum: ["issued", "void"], default: "issued" },
+    status: { type: String, default: "issued", enum: ["issued", "void", "refunded"] },
 
-    // If you store PDF:
     pdf: {
-      storage: { type: String, enum: ["none", "gridfs", "s3", "local"], default: "none" },
-      fileId: { type: mongoose.Schema.Types.ObjectId, default: null }, // GridFS id, or your own id
-      url: { type: String, default: null }, // S3/local URL
-      filename: { type: String, default: null },
+      storage: { type: String, default: "none", enum: ["none", "gridfs"] },
+      fileId: { type: mongoose.Schema.Types.ObjectId, default: null },
+      filename: { type: String, default: "" },
       mime: { type: String, default: "application/pdf" },
     },
 
-    // email tracking (optional but useful)
     email: {
       sent: { type: Boolean, default: false },
       sentAt: { type: Date, default: null },
@@ -46,5 +44,10 @@ const InvoiceSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// useful indexes for admin filters
+InvoiceSchema.index({ createdAt: -1 });
+// ❌ remove this line:
+// InvoiceSchema.index({ invoiceNumber: 1 }, { unique: true });
 
 module.exports = mongoose.model("Invoice", InvoiceSchema);

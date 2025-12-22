@@ -150,13 +150,23 @@ app.use((err, req, res, next) => {
   });
 });
 
+
+// ... your middleware, routes, etc.
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log(chalk.green.bold("✔ MongoDB connected"));
 
-    const PORT = process.env.PORT || 4000;
+    // ✅ Init GridFS bucket
+    const db = mongoose.connection.db; // native driver Db
+    app.locals.gridfsBucket = new mongoose.mongo.GridFSBucket(db, {
+      bucketName: "invoices", // collection will be invoices.files / invoices.chunks
+    });
 
+    console.log(chalk.green("✔ GridFS bucket ready: invoices"));
+
+    const PORT = process.env.PORT || 4000;
     app.listen(PORT, () => {
       console.log(
         chalk.blue.bold("🚗 CarTime API running"),

@@ -6,6 +6,8 @@ const Booking = require("../models/Booking");
 const ActivityLog = require("../models/ActivityLog");
 const UserEvent = require("../models/UserEvent");
 const PromoCode = require("../models/PromoCode");
+const Invoice = require("../models/invoice");
+const mongoose = require("mongoose");
 const { requireAuth, requireRole } = require("../middleware/auth");
 const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
@@ -797,6 +799,118 @@ router.post("/notifications/broadcast", async (req, res) => {
     });
   } catch (err) {
     console.error("Admin notifications broadcast error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+// GET /api/admin/invoices?limit=30&page=1&q=...&status=issued&from=...&to=...
+router.get("/invoices", async (req, res) => {
+  try {
+    const {
+      q,
+      bookingId,
+      userId,
+      carId,
+      status,
+      from,
+      to,
+      limit = 30,
+      page = 1,
+    } = req.query;
+
+    const filter = {};
+
+    if (bookingId) filter.booking = bookingId;
+    if (userId) filter.user = userId;
+    if (carId) filter.car = carId;
+    if (status) filter.status = status;
+
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(from);
+      if (to) filter.createdAt.$lte = new Date(to);
+    }
+
+    if (q && String(q).trim()) {
+      const r = new RegExp(String(q).trim(), "i");
+      filter.$or = [
+        { invoiceNumber: r },
+        { renterEmail: r },
+        { renterName: r },
+        { carTitle: r },
+        { carPlate: r },
+      ];
+    }
+
+    const lim = Math.min(100, Number(limit) || 30);
+    const pg = Math.max(1, Number(page) || 1);
+    const skip = (pg - 1) * lim;
+
+    const [items, total] = await Promise.all([
+      Invoice.find(filter).sort({ createdAt: -1 }).skip(skip).limit(lim).lean(),
+      Invoice.countDocuments(filter),
+    ]);
+
+    res.json({ items, total, page: pg, limit: lim });
+  } catch (err) {
+    console.error("Admin invoices list error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+router.get("/invoices/:id", async (req, res) => {
+  try {
+    const inv = await Invoice.findById(req.params.id)
+      .populate("user", "name email role")
+      .populate("booking")
+      .lean();
+
+    if (!inv) return res.status(404).json({ message: "Invoice not found" });
+
+    res.json(inv);
+  } catch (err) {
+    console.error("Admin invoice detail error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/invoices/:id/pdf", async (req, res) => {
+  try {
+    const inv = await Invoice.findById(req.params.id).lean();
+    if (!inv) return res.status(404).json({ message: "Invoice not found" });
+
+    if (inv?.pdf?.storage !== "gridfs" || !inv?.pdf?.fileId) {
+      return res.status(404).json({ message: "PDF not available" });
+    }
+
+    const bucket = req.app.locals.gridfsBucket;
+    if (!bucket) {
+      return res.status(500).json({ message: "GridFS bucket not initialized" });
+    }
+
+    // Ensure ObjectId
+    const fileId =
+      typeof inv.pdf.fileId === "string" ? new mongoose.Types.ObjectId(inv.pdf.fileId) : inv.pdf.fileId;
+
+    res.setHeader("Content-Type", inv.pdf.mime || "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${inv.pdf.filename || `CarTime-Invoice-${inv.invoiceNumber}.pdf`}"`
+    );
+
+    await logAdmin(req, {
+      action: "download_invoice_pdf",
+      targetType: "Invoice",
+      targetId: inv._id,
+      description: `Downloaded invoice PDF ${inv.invoiceNumber}`,
+      meta: { invoiceNumber: inv.invoiceNumber, bookingId: inv.booking?.toString?.() },
+    });
+
+    bucket.openDownloadStream(fileId).pipe(res);
+  } catch (err) {
+    console.error("Admin invoice pdf error:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
