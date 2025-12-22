@@ -7,7 +7,7 @@ const Car = require("../models/Car");
 const User = require("../models/User");
 const UserEvent = require("../models/UserEvent");
 const sendEmail = require("../utils/sendEmail"); // your util path
-const { bookingInvoiceHtml, invoiceNumber } = require("../utils/invoiceEmail");
+const { bookingInvoiceHtml } = require("../utils/invoiceEmail");
 const { buildBookingInvoicePdfBuffer, invoiceNumber } = require("../utils/invoicePdf");
 const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
@@ -88,6 +88,57 @@ router.get("/car/:carId/calendar", async (req, res) => {
 
 // ✅ Everything below requires login
 router.use(requireAuth);
+
+function money(n) {
+  return `RM ${Number(n || 0).toFixed(2)}`;
+}
+function fmtDT(d) {
+  return new Date(d).toLocaleString("en-MY", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function buildInvoiceEmailHtml({ renterName, booking, nights }) {
+  return `
+  <div style="font-family: -apple-system, Segoe UI, Roboto, Arial; line-height:1.45; color:#111;">
+    <h2 style="margin:0 0 6px;">CarTime — Booking Invoice</h2>
+    <p style="margin:0 0 14px; color:#555;">Hi ${renterName || "Customer"}, your booking is confirmed ✅</p>
+
+    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
+      <h3 style="margin:0 0 10px;">Trip details</h3>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px 0; color:#666;">Car</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carTitle}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Plate</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carPlate || "N/A"}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Pickup city</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.pickupCity || "—"}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Pickup</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.startDate)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Return</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.endDate)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Status</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.status}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Payment</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.paymentStatus}</td></tr>
+      </table>
+    </div>
+
+    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
+      <h3 style="margin:0 0 10px;">Pricing</h3>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px 0; color:#666;">Days</td><td style="padding:6px 0; font-weight:700; text-align:right;">${nights}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Rate / day</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.carPricePerDay)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Subtotal</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.totalPrice)}</td></tr>
+        <tr><td style="padding:10px 0; font-weight:900;">Total</td><td style="padding:10px 0; font-weight:900; text-align:right; color:#D4AF37;">${money(booking.totalPrice)}</td></tr>
+      </table>
+    </div>
+    <a href="cartime://my-bookings" 
+   style="display:inline-block; padding:12px 16px; border-radius:12px; background:#111; color:#fff; text-decoration:none; font-weight:800;">
+  View my booking
+</a>
+    <p style="margin-top:14px; color:#666;">
+      PDF invoice is attached. If you need help, reply to this email or contact support@cartime.my.
+    </p>
+  </div>`;
+}
 
 // ---------- POST /api/bookings ----------
 router.post("/", async (req, res) => {
@@ -176,20 +227,20 @@ router.post("/", async (req, res) => {
 
     // ✅ Email invoice to renter (do NOT fail booking if email fails)
 try {
-  
   if (renter?.email) {
-    const html = bookingInvoiceHtml({
-      renterName: renter.name,
-      renterEmail: renter.email,
-      booking,
-      nights,
-    });
     const pdfBuffer = await buildBookingInvoicePdfBuffer({
       renterName: renter.name,
       renterEmail: renter.email,
       booking,
       nights,
     });
+
+    const html = buildInvoiceEmailHtml({
+      renterName: renter.name,
+      booking,
+      nights,
+    });
+
     await sendEmail({
       to: renter.email,
       subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
@@ -202,8 +253,6 @@ try {
         },
       ],
     });
-  } else {
-    console.log("No renter email found; skipping invoice email.");
   }
 } catch (e) {
   console.error("Invoice email failed:", e);

@@ -1,0 +1,34 @@
+  <div style="font-family: -apple-system, Segoe UI, Roboto, Arial; line-height:1.45; color:#111;">
+    <h2 style="margin:0 0 6px;">CarTime — Booking Invoice</h2>
+    <p style="margin:0 0 14px; color:#555;">Hi ${renterName || "Customer"}, your booking is confirmed ✅</p>
+
+    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
+      <h3 style="margin:0 0 10px;">Trip details</h3>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px 0; color:#666;">Car</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carTitle}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Plate</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carPlate || "N/A"}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Pickup city</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.pickupCity || "—"}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Pickup</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.startDate)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Return</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.endDate)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Status</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.status}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Payment</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.paymentStatus}</td></tr>
+      </table>
+    </div>
+
+    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
+      <h3 style="margin:0 0 10px;">Pricing</h3>
+      <table style="width:100%; border-collapse:collapse;">
+        <tr><td style="padding:6px 0; color:#666;">Days</td><td style="padding:6px 0; font-weight:700; text-align:right;">${nights}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Rate / day</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.carPricePerDay)}</td></tr>
+        <tr><td style="padding:6px 0; color:#666;">Subtotal</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.totalPrice)}</td></tr>
+        <tr><td style="padding:10px 0; font-weight:900;">Total</td><td style="padding:10px 0; font-weight:900; text-align:right; color:#D4AF37;">${money(booking.totalPrice)}</td></tr>
+      </table>
+    </div>
+    <a href="cartime://my-bookings" 
+   style="display:inline-block; padding:12px 16px; border-radius:12px; background:#111; color:#fff; text-decoration:none; font-weight:800;">
+  View my booking
+</a>
+    <p style="margin-top:14px; color:#666;">
+      PDF invoice is attached. If you need help, reply to this email or contact support@cartime.my.
+    </p>
+  </div>
