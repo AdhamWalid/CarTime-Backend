@@ -1225,16 +1225,21 @@ function addFooter(doc, pageNum, totalPages) {
 
 /** --- ROUTE --- **/
 router.get("/reports/revenue-monthly.pdf", async (req, res) => {
+  console.log("✅ HIT monthly revenue pdf route", {
+  month: req.query.month,
+  time: new Date().toISOString(),
+});
+res.setHeader("X-Report-Route", "HIT-" + Date.now());
   try {
     const m = parseMonth(req.query.month);
     if (!m) return res.status(400).json({ message: "Invalid month. Use YYYY-MM" });
 
     // ✅ Overlap logic using rental dates (endDate is exclusive)
-    const match = {
-      status: "confirmed",
-      startDate: { $lt: m.end },  // starts before month ends
-      endDate: { $gt: m.start },  // ends after month starts (exclusive endDate)
-    };
+      const match = {
+        status: "confirmed",
+        paymentStatus: "paid",
+        createdAt: { $gte: m.start, $lt: m.end },
+      };
 
     // DEBUG (TEMP)
     console.log("[monthly report]", req.query.month, match);
