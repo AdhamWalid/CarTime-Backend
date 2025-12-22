@@ -14,7 +14,7 @@ const transporter = nodemailer.createTransport({
   // debug: true,
 });
 
-async function sendEmail({ to, subject, html, text }) {
+async function sendEmail({ to, subject, html, text , attachments}) {
   try {
     const info = await transporter.sendMail({
       from: process.env.MAIL_FROM || '"Cartime" <no-reply@cartime.app>',
@@ -22,6 +22,7 @@ async function sendEmail({ to, subject, html, text }) {
       subject,
       html,
       text,
+      attachments
     });
 
     console.log("📧 Email sent:", info.messageId);

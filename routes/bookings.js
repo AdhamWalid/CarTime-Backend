@@ -103,41 +103,85 @@ function fmtDT(d) {
 }
 
 function buildInvoiceEmailHtml({ renterName, booking, nights }) {
+  const inv = invoiceNumber(booking._id);
+
   return `
-  <div style="font-family: -apple-system, Segoe UI, Roboto, Arial; line-height:1.45; color:#111;">
-    <h2 style="margin:0 0 6px;">CarTime — Booking Invoice</h2>
-    <p style="margin:0 0 14px; color:#555;">Hi ${renterName || "Customer"}, your booking is confirmed ✅</p>
+  <div style="font-family:-apple-system,Segoe UI,Roboto,Arial; background:#f6f7fb; padding:24px;">
+    <div style="max-width:640px; margin:0 auto; background:#ffffff; border:1px solid #eef0f4; border-radius:16px; overflow:hidden;">
+      
+      <!-- Header -->
+      <div style="padding:18px 20px; background:linear-gradient(135deg,#0b1220,#111827);">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <div>
+            <div style="font-size:14px; letter-spacing:0.4px; color:#cbd5e1; font-weight:700;">CarTime</div>
+            <div style="font-size:20px; color:#fff; font-weight:900; margin-top:2px;">Booking Invoice</div>
+            <div style="font-size:12px; color:rgba(255,255,255,0.70); margin-top:4px;">Invoice #${inv}</div>
+          </div>
+          <div style="padding:8px 10px; border-radius:999px; background:rgba(212,175,55,0.18); border:1px solid rgba(212,175,55,0.35); color:#D4AF37; font-weight:800; font-size:12px;">
+            Confirmed ✅
+          </div>
+        </div>
+      </div>
 
-    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
-      <h3 style="margin:0 0 10px;">Trip details</h3>
-      <table style="width:100%; border-collapse:collapse;">
-        <tr><td style="padding:6px 0; color:#666;">Car</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carTitle}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Plate</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.carPlate || "N/A"}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Pickup city</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.pickupCity || "—"}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Pickup</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.startDate)}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Return</td><td style="padding:6px 0; font-weight:700; text-align:right;">${fmtDT(booking.endDate)}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Status</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.status}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Payment</td><td style="padding:6px 0; font-weight:700; text-align:right;">${booking.paymentStatus}</td></tr>
-      </table>
-    </div>
+      <!-- Body -->
+      <div style="padding:18px 20px; color:#0f172a;">
+        <p style="margin:0 0 12px; color:#334155;">
+          Hi <b>${renterName || "Customer"}</b>, your booking is confirmed. Your PDF invoice is attached.
+        </p>
 
-    <div style="padding:14px; border:1px solid #eee; border-radius:12px; margin: 12px 0;">
-      <h3 style="margin:0 0 10px;">Pricing</h3>
-      <table style="width:100%; border-collapse:collapse;">
-        <tr><td style="padding:6px 0; color:#666;">Days</td><td style="padding:6px 0; font-weight:700; text-align:right;">${nights}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Rate / day</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.carPricePerDay)}</td></tr>
-        <tr><td style="padding:6px 0; color:#666;">Subtotal</td><td style="padding:6px 0; font-weight:700; text-align:right;">${money(booking.totalPrice)}</td></tr>
-        <tr><td style="padding:10px 0; font-weight:900;">Total</td><td style="padding:10px 0; font-weight:900; text-align:right; color:#D4AF37;">${money(booking.totalPrice)}</td></tr>
-      </table>
+        <!-- Trip details card -->
+        <div style="border:1px solid #eef0f4; border-radius:14px; padding:14px; margin:12px 0;">
+          <div style="font-weight:900; margin-bottom:10px;">Trip details</div>
+          <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            ${row("Car", booking.carTitle)}
+            ${row("Plate", booking.carPlate || "N/A")}
+            ${row("Pickup city", booking.pickupCity || "—")}
+            ${row("Pickup", fmtDT(booking.startDate))}
+            ${row("Return", fmtDT(booking.endDate))}
+            ${row("Payment", booking.paymentStatus)}
+          </table>
+        </div>
+
+        <!-- Pricing card -->
+        <div style="border:1px solid #eef0f4; border-radius:14px; padding:14px; margin:12px 0;">
+          <div style="font-weight:900; margin-bottom:10px;">Pricing</div>
+          <table style="width:100%; border-collapse:collapse; font-size:13px;">
+            ${row("Days", String(nights))}
+            ${row("Rate / day", money(booking.carPricePerDay))}
+            ${row("Subtotal", money(booking.totalPrice))}
+            <tr>
+              <td style="padding:10px 0; font-weight:900;">Total</td>
+              <td style="padding:10px 0; font-weight:900; text-align:right; color:#D4AF37;">${money(booking.totalPrice)}</td>
+            </tr>
+          </table>
+        </div>
+
+        <!-- CTA -->
+        <div style="margin-top:14px;">
+          <a href="https://cartime.my" style="display:inline-block; padding:12px 16px; border-radius:12px; background:#111827; color:#fff; text-decoration:none; font-weight:900;">
+            Open CarTime
+          </a>
+          <span style="display:inline-block; margin-left:10px; color:#64748b; font-size:12px;">
+            Need help? support@cartime.my
+          </span>
+        </div>
+
+        <div style="margin-top:16px; color:#94a3b8; font-size:11px;">
+          Invoice is generated automatically. Please keep this email for your records.
+        </div>
+      </div>
     </div>
-    <a href="cartime://my-bookings" 
-   style="display:inline-block; padding:12px 16px; border-radius:12px; background:#111; color:#fff; text-decoration:none; font-weight:800;">
-  View my booking
-</a>
-    <p style="margin-top:14px; color:#666;">
-      PDF invoice is attached. If you need help, reply to this email or contact support@cartime.my.
-    </p>
-  </div>`;
+  </div>
+  `;
+}
+
+function row(label, value) {
+  return `
+    <tr>
+      <td style="padding:6px 0; color:#64748b;">${label}</td>
+      <td style="padding:6px 0; font-weight:800; text-align:right; color:#0f172a;">${value}</td>
+    </tr>
+  `;
 }
 
 // ---------- POST /api/bookings ----------
@@ -241,18 +285,20 @@ try {
       nights,
     });
 
-    await sendEmail({
-      to: renter.email,
-      subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
-      html,
-      attachments: [
-        {
-          filename: `CarTime-Invoice-${invoiceNumber(booking._id)}.pdf`,
-          content: pdfBuffer,
-          contentType: "application/pdf",
-        },
-      ],
-    });
+await sendEmail({
+  to: renter.email,
+  subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
+  html,
+  text: `Your booking is confirmed. Invoice #${invoiceNumber(booking._id)} is attached.`,
+  attachments: [
+    {
+      filename: `CarTime-Invoice-${invoiceNumber(booking._id)}.pdf`,
+      content: pdfBuffer,                 // Buffer for nodemailer
+      contentType: "application/pdf",
+      contentDisposition: "attachment",
+    },
+  ],
+});
   }
 } catch (e) {
   console.error("Invoice email failed:", e);
