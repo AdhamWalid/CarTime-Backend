@@ -8,7 +8,8 @@ const User = require("../models/User");
 const UserEvent = require("../models/UserEvent");
 const sendEmail = require("../utils/sendEmail"); // your util path
 const { bookingInvoiceHtml } = require("../utils/invoiceEmail");
-const { buildBookingInvoicePdfBuffer, invoiceNumber } = require("../utils/invoicePdf");
+const { buildBookingInvoicePdfBuffer } = require("../utils/invoicePdf");
+const { invoiceNumber } = require("../utils/invoiceNumber");
 const { requireAuth } = require("../middleware/auth");
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
@@ -232,6 +233,7 @@ router.post("/", async (req, res) => {
 
     const totalPrice = nights * (car.pricePerDay || 0);
 
+    // 1) Create booking
     const booking = await Booking.create({
       user: req.user.id,
       car: carId,
@@ -269,41 +271,106 @@ router.post("/", async (req, res) => {
 
     const renter = await User.findById(req.user.id).select("name email expoPushToken");
 
-    // ✅ Email invoice to renter (do NOT fail booking if email fails)
-try {
-  if (renter?.email) {
-    const pdfBuffer = await buildBookingInvoicePdfBuffer({
-      renterName: renter.name,
-      renterEmail: renter.email,
-      booking,
+    // 2) Create invoice record FIRST (so it always exists)
+    const invNo = invoiceNumber(booking._id);
+
+    let invoiceDoc = await Invoice.create({
+      invoiceNumber: invNo,
+      booking: booking._id,
+      user: req.user.id,
+      car: carId,
+
+      renterName: renter?.name || "",
+      renterEmail: renter?.email || "",
+      contactPhone,
+
+      carTitle: booking.carTitle,
+      carPlate: booking.carPlate,
+      pickupCity: booking.pickupCity,
+
+      startDate: booking.startDate,
+      endDate: booking.endDate,
       nights,
+
+      currency: "MYR",
+      subtotal: booking.totalPrice,
+      discount: 0,
+      promoCode: null,
+      amount: booking.totalPrice,
+
+      status: "issued",
+      pdf: { storage: "none" },
+      email: { sent: false, sentAt: null, error: null },
     });
 
-    const html = buildInvoiceEmailHtml({
-      renterName: renter.name,
-      booking,
-      nights,
-    });
+    // 3) Generate PDF + upload + email (DON’T fail booking if this fails)
+    try {
+      if (renter?.email) {
+        const pdfBuffer = await buildBookingInvoicePdfBuffer({
+          renterName: renter.name,
+          renterEmail: renter.email,
+          booking,
+          nights,
+          invoiceNumber: invNo, // optional if your pdf util supports it
+        });
 
-await sendEmail({
-  to: renter.email,
-  subject: `CarTime Invoice ${invoiceNumber(booking._id)} — ${booking.carTitle}`,
-  html,
-  text: `Your booking is confirmed. Invoice #${invoiceNumber(booking._id)} is attached.`,
-  attachments: [
-    {
-      filename: `CarTime-Invoice-${invoiceNumber(booking._id)}.pdf`,
-      content: pdfBuffer,                 // Buffer for nodemailer
-      contentType: "application/pdf",
-      contentDisposition: "attachment",
-    },
-  ],
-});
-  }
-} catch (e) {
-  console.error("Invoice email failed:", e);
-}
+        // Upload to GridFS (optional but recommended)
+        if (req.app.locals.gridfsBucket) {
+          const fileId = await uploadPdfToGridFS({
+            bucket: req.app.locals.gridfsBucket,
+            buffer: pdfBuffer,
+            filename: `CarTime-Invoice-${invNo}.pdf`,
+            metadata: {
+              invoiceNumber: invNo,
+              bookingId: booking._id.toString(),
+              userId: req.user.id,
+            },
+          });
 
+          await Invoice.updateOne(
+            { _id: invoiceDoc._id },
+            {
+              $set: {
+                "pdf.storage": "gridfs",
+                "pdf.fileId": fileId,
+                "pdf.filename": `CarTime-Invoice-${invNo}.pdf`,
+                "pdf.mime": "application/pdf",
+              },
+            }
+          );
+        }
+
+        const html = buildInvoiceEmailHtml({ renterName: renter.name, booking, nights });
+
+        await sendEmail({
+          to: renter.email,
+          subject: `CarTime Invoice ${invNo} — ${booking.carTitle}`,
+          html,
+          text: `Your booking is confirmed. Invoice #${invNo} is attached.`,
+          attachments: [
+            {
+              filename: `CarTime-Invoice-${invNo}.pdf`,
+              content: pdfBuffer,
+              contentType: "application/pdf",
+              contentDisposition: "attachment",
+            },
+          ],
+        });
+
+        await Invoice.updateOne(
+          { _id: invoiceDoc._id },
+          { $set: { "email.sent": true, "email.sentAt": new Date(), "email.error": null } }
+        );
+      }
+    } catch (e) {
+      console.error("Invoice PDF/email failed:", e);
+      await Invoice.updateOne(
+        { _id: invoiceDoc._id },
+        { $set: { "email.sent": false, "email.error": String(e?.message || e) } }
+      );
+    }
+
+    // push notifications (keep your existing logic)
     if (renter?.expoPushToken) {
       await sendExpoPushNotification(renter.expoPushToken, {
         title: "Booking Confirmed ✅",
@@ -312,31 +379,23 @@ await sendEmail({
       });
     }
 
-
-
-
     if (car.ownerId) {
       const owner = await User.findById(car.ownerId).select("expoPushToken name");
       if (owner?.expoPushToken) {
         await sendExpoPushNotification(owner.expoPushToken, {
           title: "New booking 📅",
           body: `${renter?.name || "A customer"} booked your ${booking.carTitle}.`,
-          data: {
-            type: "NEW_BOOKING",
-            bookingId: booking._id.toString(),
-            carId: carId.toString(),
-          },
+          data: { type: "NEW_BOOKING", bookingId: booking._id.toString(), carId: carId.toString() },
         });
       }
     }
 
-    return res.status(201).json(booking);
+    return res.status(201).json({ booking, invoiceId: invoiceDoc._id, invoiceNumber: invNo });
   } catch (err) {
     console.error("Create booking error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 });
-
 // ---------- GET /api/bookings/my ----------
 router.get("/my", async (req, res) => {
   try {
