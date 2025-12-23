@@ -14,6 +14,8 @@ const bookingRoutes = require("./routes/bookings");
 const pushRoutes = require("./routes/push");
 const promoRoutes = require("./routes/promos");
 const helmet = require("helmet");
+const walletRoutes = require("./routes/wallet");
+
 const rateLimit = require("express-rate-limit");
 const sanitize = require("mongo-sanitize");
 const connectDB = require("./db"); // adjust path if you put it elsewhere
@@ -106,6 +108,9 @@ app.use("/api/push", pushRoutes);
 console.log(chalk.gray("• /api/push"));
 app.use("/api/promos", promoRoutes);
 console.log(chalk.gray("• /api/promos"));
+console.log(chalk.gray("• /api/wallet"));
+app.use("/api/wallet", walletRoutes);
+
 
 
 app.get("/", (req, res) => {

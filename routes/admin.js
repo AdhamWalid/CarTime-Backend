@@ -16,7 +16,8 @@ const jwt = require("jsonwebtoken");
 const router = express.Router();
 const { Parser } = require("json2csv");
 const { buildMonthlyRevenuePdfBuffer } = require("../utils/buildMonthlyRevenuePdfBuffer");
-
+const Wallet = require("../models/Wallet");
+const WalletTx = require("../models/WalletTransaction");
 // near top of routes/admin.js
 const fetch = global.fetch;
 // All admin routes require admin login
@@ -137,7 +138,8 @@ router.get("/cars", async (req, res) => {
 
 /**
  * POST /api/admin/cars/:id/approve
- * Approve a car listing
+ * Approve a car 
+ * 
  */
 router.post("/cars/:id/approve", async (req, res) => {
   try {
@@ -1329,4 +1331,241 @@ const series = Array.from({ length: daysInMonth }).map((_, i) => {
     res.status(500).json({ message: "Server error", error: String(err?.message || err) });
   }
 });
+
+
+router.get("/wallet/topups", async (req, res) => {
+  try {
+    const status = String(req.query.status || "pending").toLowerCase();
+    const q = String(req.query.q || "").trim();
+
+    const allowed = ["pending", "approved", "rejected", "all"];
+    const st = allowed.includes(status) ? status : "pending";
+
+    // Base filter (search applies to ALL stats + list)
+    const base = { type: "topup" };
+
+    if (q) {
+      const safe = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const r = new RegExp(safe, "i");
+      base.$or = [{ reference: r }, { proofUrl: r }];
+    }
+
+    // List filter (adds status)
+    const listFilter = { ...base };
+    if (st !== "all") listFilter.status = st;
+
+    const [result] = await WalletTx.aggregate([
+      {
+        $facet: {
+          items: [
+            { $match: listFilter },
+            { $sort: { createdAt: -1 } },
+            { $limit: 200 },
+            {
+              $lookup: {
+                from: "users",
+                localField: "user",
+                foreignField: "_id",
+                as: "userDoc",
+              },
+            },
+            { $unwind: { path: "$userDoc", preserveNullAndEmptyArrays: true } },
+            {
+              $project: {
+                _id: 1,
+                status: 1,
+                amount: { $toDouble: "$amount" }, // ✅ force numeric
+                currency: { $ifNull: ["$currency", "MYR"] },
+                method: { $ifNull: ["$method", "manual"] },
+                reference: { $ifNull: ["$reference", ""] },
+                createdAt: 1,
+                userName: { $ifNull: ["$userDoc.name", ""] },
+                userEmail: { $ifNull: ["$userDoc.email", ""] },
+                userPhone: { $ifNull: ["$userDoc.phoneNumber", ""] },
+              },
+            },
+          ],
+
+          // Summary ALWAYS across ALL statuses (but still respects q search)
+          summary: [
+            { $match: base },
+            {
+              $group: {
+                _id: "$status",
+                count: { $sum: 1 },
+                sum: { $sum: { $toDouble: "$amount" } },
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const items = result?.items || [];
+    const rows = result?.summary || [];
+
+    const byStatus = Object.fromEntries(
+      rows.map((r) => [r._id || "unknown", { count: r.count, sum: r.sum }])
+    );
+
+    const totalCount =
+      (byStatus.pending?.count || 0) +
+      (byStatus.approved?.count || 0) +
+      (byStatus.rejected?.count || 0);
+
+    const totalSum =
+      (byStatus.pending?.sum || 0) +
+      (byStatus.approved?.sum || 0) +
+      (byStatus.rejected?.sum || 0);
+
+    res.json({
+      items,
+      summary: {
+        total: { count: totalCount, sum: totalSum },
+        pending: byStatus.pending || { count: 0, sum: 0 },
+        approved: byStatus.approved || { count: 0, sum: 0 },
+        rejected: byStatus.rejected || { count: 0, sum: 0 },
+      },
+    });
+  } catch (err) {
+    console.error("Admin topups list error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+// POST /api/admin/wallet/topups/:txId/approve
+router.get("/wallet/topups/export.csv", async (req, res) => {
+  try {
+    const status = String(req.query.status || "pending");
+    const allowed = ["pending", "approved", "rejected"];
+    const st = allowed.includes(status) ? status : "pending";
+
+    const rows = await WalletTx.find({ type: "topup", status: st })
+      .sort({ createdAt: -1 })
+      .populate("user", "name email phoneNumber")
+      .lean();
+
+    const fields = [
+      { label: "Tx ID", value: (r) => String(r._id) },
+      { label: "Status", value: "status" },
+      { label: "Amount", value: (r) => Number(r.amount || 0).toFixed(2) },
+      { label: "Currency", value: (r) => r.currency || "MYR" },
+      { label: "Reference", value: (r) => r.reference || "" },
+      { label: "Proof URL", value: (r) => r.proofUrl || "" },
+
+      { label: "User Name", value: (r) => r.user?.name || "" },
+      { label: "User Email", value: (r) => r.user?.email || "" },
+      { label: "User Phone", value: (r) => r.user?.phoneNumber || "" },
+
+      { label: "Created At", value: (r) => (r.createdAt ? new Date(r.createdAt).toISOString() : "") },
+      { label: "Decided At", value: (r) => (r.decidedAt ? new Date(r.decidedAt).toISOString() : "") },
+      { label: "Balance Before", value: (r) => (r.balanceBefore ?? "") },
+      { label: "Balance After", value: (r) => (r.balanceAfter ?? "") },
+    ];
+
+    const parser = new Parser({ fields });
+    const csv = parser.parse(rows);
+
+    const filename = `cartime-wallet-topups-${st}-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) {
+    console.error("Export wallet topups CSV error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/wallet/topups/:txId/approve", async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.txId)) {
+  return res.status(400).json({ message: "Invalid txId" });
+}
+  const session = await mongoose.startSession();
+  session.startTransaction(); 
+  
+  try {
+    const tx = await WalletTx.findById(req.params.txId).session(session);
+    if (!tx) throw new Error("Top-up request not found");
+    if (tx.type !== "topup") throw new Error("Not a top-up transaction");
+    if (tx.status !== "pending") throw new Error(`Already ${tx.status}`);
+
+    const wallet = await Wallet.findOne({ user: tx.user }).session(session);
+    const w = wallet || (await Wallet.create([{ user: tx.user, balance: 0, currency: "MYR" }], { session })).at(0);
+
+    if (w.status !== "active") throw new Error("Wallet is frozen");
+
+    const before = Number(w.balance || 0);
+    const after = before + Number(tx.amount || 0);
+
+    // update wallet balance
+    w.balance = after;
+    await w.save({ session });
+
+    // approve SAME tx + add snapshots
+    tx.status = "approved";
+    tx.decidedBy = req.user.id;
+    tx.decidedAt = new Date();
+    tx.balanceBefore = before;
+    tx.balanceAfter = after;
+    await tx.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+    await logAdmin(req, {
+  action: "wallet_topup_approved",
+  targetType: "WalletTransaction",
+  targetId: tx._id,
+  description: `Approved wallet top-up RM ${tx.amount} for user ${tx.user}`,
+  meta: { amount: tx.amount, userId: String(tx.user) },
+});
+    res.json({ message: "Approved + wallet credited", wallet: w, tx });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Admin approve topup error:", err);
+    res.status(400).json({ message: String(err.message || err) });
+  }
+});
+
+// POST /api/admin/wallet/topups/:txId/reject
+router.post("/wallet/topups/:txId/reject", async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.txId)) {
+  return res.status(400).json({ message: "Invalid txId" });
+}
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const tx = await WalletTx.findById(req.params.txId).session(session);
+    if (!tx) throw new Error("Top-up request not found");
+    if (tx.type !== "topup") throw new Error("Not a top-up transaction");
+    if (tx.status !== "pending") throw new Error(`Already ${tx.status}`);
+
+    const wallet = await Wallet.findOne({ user: tx.user }).session(session);
+    const before = Number(wallet?.balance || 0);
+
+    tx.status = "rejected";
+    tx.decidedBy = req.user.id;
+    tx.decidedAt = new Date();
+    tx.balanceBefore = before;
+    tx.balanceAfter = before;
+    await tx.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+    await logAdmin(req, {
+  action: "wallet_topup_rejected",
+  targetType: "WalletTransaction",
+  targetId: tx._id,
+  description: `Rejected wallet top-up RM ${tx.amount} for user ${tx.user}`,
+  meta: { amount: tx.amount, userId: String(tx.user) },
+});
+    res.json({ message: "Rejected", tx });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Admin reject topup error:", err);
+    res.status(400).json({ message: String(err.message || err) });
+  }
+});
+
 module.exports = router;
