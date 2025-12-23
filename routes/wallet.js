@@ -112,8 +112,8 @@ router.post("/topup-request", async (req, res) => {
       bank: {
         // put your current personal/biz bank details here
         name: "Maybank",
-        accountName: "YOUR NAME (temporary)",
-        accountNumber: "XXXX-XXXX-XXXX",
+        accountName: "Adham Walid Ali (temporary)",
+        accountNumber: "0160-1517-5707",
         referenceMaxLen: 20,
       },
     });
