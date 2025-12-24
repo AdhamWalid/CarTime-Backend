@@ -110,10 +110,10 @@ router.post("/topup-request", async (req, res) => {
       message: "Top-up request created. Transfer using the reference shown.",
       tx,
       bank: {
-        // put your current personal/biz bank details here
+
         name: "Maybank",
-        accountName: "Adham Walid Ali (temporary)",
-        accountNumber: "0160-1517-5707",
+        accountName: "CarTime Sdn Bhd",
+        accountNumber: "xxxx-xxxx-xxxx",
         referenceMaxLen: 20,
       },
     });
