@@ -584,4 +584,37 @@ endDate: { $gt: startUTC },
   }
 });
 
+
+router.get("/active", async (req, res) => {
+  try {
+    const now = new Date();
+
+    const booking = await Booking.findOne({
+      user: req.user.id,
+      status: { $in: ["scheduled", "active", "confirmed"] },
+      paymentStatus: "paid", // keep it clean: only paid bookings show banner
+      endDate: { $gt: now }, // still relevant
+    })
+      .sort({ startDate: 1 }) // next upcoming first
+      .select("car carTitle pickupCity startDate endDate status paymentStatus")
+      .lean();
+
+    return res.json({ booking: booking || null });
+  } catch (err) {
+    console.error("Active booking error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// GET /api/bookings/:id  (auth)
+router.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const b = await Booking.findOne({ _id: req.params.id, user: req.user.id }).lean();
+    if (!b) return res.status(404).json({ message: "Not found" });
+    return res.json({ booking: b });
+  } catch (e) {
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
 module.exports = router;
