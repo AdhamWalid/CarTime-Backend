@@ -54,7 +54,11 @@ const CarSchema = new mongoose.Schema({
     type: [String],
     default: [],
   },
-  
+  tier: {
+  type: String,
+  enum: ["eco", "standard", "luxury"],
+  default: "standard",
+},
   createdAt: { type: Date, default: Date.now },
 });
 

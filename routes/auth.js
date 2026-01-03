@@ -20,7 +20,7 @@ const sendEmail = require("../utils/sendEmail");
 // Helper: sign a normal auth token
 function signAuthToken(user) {
   return jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-    expiresIn: "7d",
+    expiresIn: "90d",
   });
 }
 
@@ -187,9 +187,7 @@ router.post("/register-complete", async (req, res) => {
 
     await EmailVerification.deleteOne({ _id: record._id });
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = signAuthToken(user);
 
     return res.json({
       token,
@@ -689,9 +687,7 @@ router.post("/email/verify", async (req, res) => {
 
     await EmailVerification.deleteMany({ email });
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = signAuthToken(user);
 
     res.json({
       message: "Email verified successfully.",
@@ -754,9 +750,7 @@ router.post("/social/google", async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = signAuthToken(user);
 
     const needsPhoneNumber = !user.phoneNumber;
 
@@ -824,9 +818,7 @@ router.post("/social/apple", async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, {
-      expiresIn: "7d",
-    });
+    const token = signAuthToken(user);
 
     const needsPhoneNumber = !user.phoneNumber;
 
