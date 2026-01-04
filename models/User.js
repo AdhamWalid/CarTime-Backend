@@ -51,6 +51,21 @@ const UserSchema = new mongoose.Schema(
 
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+  
+verification: {
+  status: { type: String, enum: ["not_submitted", "pending", "approved", "rejected"], default: "not_submitted" },
+  note: { type: String, default: "" },
+  submittedAt: { type: Date },
+  reviewedAt: { type: Date },
+  documents: {
+    drivingLicenseFront: { type: String, default: "" },
+    drivingLicenseBack: { type: String, default: "" },
+    passport: { type: String, default: "" },
+    mykadFront: { type: String, default: "" },
+    mykadBack: { type: String, default: "" },
+  },
+},
+
   },
   
   { timestamps: true }

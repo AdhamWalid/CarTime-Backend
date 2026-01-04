@@ -7,6 +7,7 @@ const ActivityLog = require("../models/ActivityLog");
 const UserEvent = require("../models/UserEvent");
 const PromoCode = require("../models/PromoCode");
 const Invoice = require("../models/invoice");
+const Verification = require("../models/Verification");
 const mongoose = require("mongoose");
 const PDFDocument = require("pdfkit");
 const { requireAuth, requireRole } = require("../middleware/auth");
@@ -18,6 +19,8 @@ const { Parser } = require("json2csv");
 const { buildMonthlyRevenuePdfBuffer } = require("../utils/buildMonthlyRevenuePdfBuffer");
 const Wallet = require("../models/Wallet");
 const WalletTx = require("../models/WalletTransaction");
+const path = require("path");
+const fs = require("fs");
 // near top of routes/admin.js
 const fetch = global.fetch;
 // All admin routes require admin login
@@ -1567,5 +1570,176 @@ router.post("/wallet/topups/:txId/reject", async (req, res) => {
     res.status(400).json({ message: String(err.message || err) });
   }
 });
+
+
+// ====== VERIFICATIONS (Admin) ======
+
+/**
+ * GET /api/admin/verifications?status=pending
+ * list verification requests
+ */
+router.get("/verifications", async (req, res) => {
+  try {
+    const status = String(req.query.status || "pending").toLowerCase();
+    const filter = {};
+    if (["pending","approved","rejected","not_submitted"].includes(status)) filter.status = status;
+
+    const items = await Verification.find(filter)
+      .sort({ updatedAt: -1 })
+      .populate("user", "name email phoneNumber role")
+      .lean();
+
+    res.json(items.map(v => ({
+      _id: v._id,
+      status: v.status,
+      idType: v.idType,
+      submittedAt: v.submittedAt,
+      decidedAt: v.decidedAt,
+      note: v.note || "",
+      user: v.user ? {
+        _id: v.user._id,
+        name: v.user.name,
+        email: v.user.email,
+        phoneNumber: v.user.phoneNumber || "",
+        role: v.user.role,
+      } : null,
+      files: Object.fromEntries(
+        ["licenseFront","licenseBack","mykadFront","mykadBack","passport"].map(k => [k, !!v.files?.[k]])
+      ),
+    })));
+  } catch (err) {
+    console.error("Admin list verifications error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+// must be BEFORE /verifications/:id
+router.get("/verifications/file", requireAuth, requireRole("admin"), async (req, res) => {
+  try {
+    const rel = String(req.query.rel || "").replace(/^\/+/, "");
+    if (!rel) return res.status(400).json({ message: "Missing file path" });
+
+    const baseDir = path.resolve(process.cwd(), "private_uploads");
+    const fullPath = path.resolve(baseDir, rel);
+
+    if (!fullPath.startsWith(baseDir + path.sep)) {
+      return res.status(403).json({ message: "Invalid file path" });
+    }
+
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ message: "File not found" });
+    }
+
+    return res.sendFile(fullPath);
+  } catch (e) {
+    console.error("Open file error:", e);
+    return res.status(500).json({ message: "Failed to open file" });
+  }
+});
+;/**
+ * GET /api/admin/verifications/:id
+ */
+router.get("/verifications/:id", async (req, res) => {
+  try {
+    const v = await Verification.findById(req.params.id)
+      .populate("user", "name email phoneNumber role")
+      .lean();
+    if (!v) return res.status(404).json({ message: "Not found" });
+
+    res.json(v);
+  } catch (err) {
+    console.error("Admin verification detail error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * GET /api/admin/verifications/:id/file/:key
+ * streams the file (ONLY admin)
+ */
+router.get("/verifications/:id/file/:key", async (req, res) => {
+  try {
+    const key = String(req.params.key);
+    const allowed = ["licenseFront","licenseBack","mykadFront","mykadBack","passport"];
+    if (!allowed.includes(key)) return res.status(400).json({ message: "Invalid file key" });
+
+    const v = await Verification.findById(req.params.id).lean();
+    if (!v) return res.status(404).json({ message: "Not found" });
+
+    const file = v.files?.[key];
+    if (!file?.path) return res.status(404).json({ message: "File not found" });
+
+    // extra safety: ensure it's inside our private_uploads folder
+    const root = path.join(process.cwd(), "private_uploads", "verifications");
+    const resolved = path.resolve(file.path);
+    if (!resolved.startsWith(path.resolve(root))) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    if (!fs.existsSync(resolved)) return res.status(404).json({ message: "File missing on disk" });
+
+    res.setHeader("Content-Type", file.mime || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename="${file.originalName || file.filename}"`);
+    return res.sendFile(resolved);
+  } catch (err) {
+    console.error("Admin stream verification file error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * POST /api/admin/verifications/:id/approve
+ * body: { note?: string }
+ */
+router.post("/verifications/:id/approve", async (req, res) => {
+  try {
+    const note = String(req.body.note || "");
+    const v = await Verification.findById(req.params.id);
+    if (!v) return res.status(404).json({ message: "Not found" });
+
+    v.status = "approved";
+    v.note = note;
+    v.decidedBy = req.user.id;
+    v.decidedAt = new Date();
+    await v.save();
+
+    await logAdmin(req, {
+      action: "verification_approved",
+      targetType: "Verification",
+      targetId: v._id,
+      description: `Approved verification for user ${v.user}`,
+      meta: { verificationId: String(v._id), userId: String(v.user) },
+    });
+
+    res.json({ message: "Approved", status: v.status });
+  } catch (err) {
+    console.error("Admin approve verification error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * POST /api/admin/verifications/:id/reject
+ * body: { note?: string }
+ */
+router.post("/verifications/:id/reject", requireAuth, requireRole("admin"), async (req, res) => {
+  const { note } = req.body;
+  const v = await Verification.findById(req.params.id);
+  if (!v) return res.status(404).json({ message: "Not found" });
+
+  v.status = "rejected";
+  v.note = note || "Rejected";
+  v.decidedAt = new Date();
+  v.decidedBy = req.user.id;
+
+  // optional: 24h cooldown before they can try again
+  v.cooldownUntil = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+  await v.save();
+  res.json({ message: "Rejected", verification: v });
+});
+
+
+// GET /api/admin/verifications/file?userId=...&name=...
+
 
 module.exports = router;

@@ -13,6 +13,8 @@ const sendEmail = require("../utils/sendEmail");
 const { buildBookingInvoicePdfBuffer } = require("../utils/invoicePdf");
 const { invoiceNumber } = require("../utils/invoiceNumber");
 const { requireAuth } = require("../middleware/auth");
+const requireVerified = require("../middleware/requireVerified");
+
 const { sendExpoPushNotification } = require("../utils/expoPush");
 const { parseDateOnly, toDateOnlyString } = require("../utils/dateOnly");
 
@@ -189,7 +191,7 @@ router.get("/car/:carId/calendar", async (req, res) => {
 router.use(requireAuth);
 
 // ---------- POST /api/bookings ----------
-router.post("/", async (req, res) => {
+router.post("/",  requireVerified , async (req, res) => {
   try {
     const { carId, startDate, endDate, contactPhone } = req.body;
 
@@ -249,8 +251,6 @@ if (conflict) {
     },
   });
 }
-
-    const totalPrice = nights * (car.pricePerDay || 0);
 
     const booking = await Booking.create({
       user: req.user.id,
@@ -428,7 +428,7 @@ router.get("/my", async (req, res) => {
 // ---------- POST /api/bookings/pay-with-wallet ----------
 // Creates booking + debits wallet in ONE transaction.
 // If insufficient funds => NO booking is created.
-router.post("/pay-with-wallet", async (req, res) => {
+router.post("/pay-with-wallet", requireVerified, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -478,6 +478,10 @@ const endUTC   = toUTCMidnight(end);
     if (isNaN(nights) || nights < 1) {
       return res.status(400).json({ message: "Minimum booking is 1 day. Please check your dates." });
     }
+    const totalPrice = nights * (car.pricePerDay || 0);
+if (!Number.isFinite(totalPrice) || totalPrice <= 0) {
+  return res.status(400).json({ message: "Invalid booking amount" });
+}
 
     // block dates that are already PAID + (scheduled/active/confirmed)
     const conflict = await Booking.findOne({
@@ -585,7 +589,7 @@ endDate: { $gt: startUTC },
 });
 
 
-router.get("/active", async (req, res) => {
+router.get("/active", requireVerified , async (req, res) => {
   try {
     const now = new Date();
 

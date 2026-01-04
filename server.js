@@ -16,7 +16,12 @@ const promoRoutes = require("./routes/promos");
 const helmet = require("helmet");
 const walletRoutes = require("./routes/wallet");
 const supportRoutes = require("./routes/support");
-
+const verificationRoutes = require("./routes/verification"); // ✅ your file
+const path = require("path");
+const fs = require("fs");
+const User = require("./models/User"); // adjust path if needed
+const { requireAuth, requireRole } = require("./middleware/auth");
+const { upload } = require("./middleware/verificationUpload");
 const rateLimit = require("express-rate-limit");
 const sanitize = require("mongo-sanitize");
 const connectDB = require("./db"); // adjust path if you put it elsewhere
@@ -88,6 +93,94 @@ origin: function (origin, callback) {
   })
 );
 
+function toFileObj(file, key) {
+  if (!file) return null;
+  return {
+    key,                             // REQUIRED by schema
+    filename: file.filename,         // stored name on disk
+    originalName: file.originalname || "",
+    mime: file.mimetype || "",
+    size: file.size || 0,
+    // IMPORTANT: store a RELATIVE path (not absolute) so it works on server
+    path: file.path.replace(process.cwd(), "").replaceAll("\\", "/"),
+  };
+}
+
+app.post(
+  "/api/verification/upload",
+  requireAuth,
+  upload.fields([
+    { name: "drivingLicenseFront", maxCount: 1 },
+    { name: "drivingLicenseBack", maxCount: 1 },
+    { name: "passport", maxCount: 1 },
+    { name: "mykadFront", maxCount: 1 },
+    { name: "mykadBack", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      if (req.user?.role === "guest") {
+        return res.status(403).json({ message: "Guests cannot upload documents." });
+      }
+
+      const files = req.files || {};
+      const one = (k) => files?.[k]?.[0] || null;
+
+      const dlFront = one("drivingLicenseFront");
+      const dlBack  = one("drivingLicenseBack");
+
+      if (!dlFront || !dlBack) {
+        return res.status(400).json({ message: "Driving license front and back are required." });
+      }
+
+      // upsert verification doc for this user
+      const doc = await Verification.findOneAndUpdate(
+        { user: req.user.id },
+        { $setOnInsert: { user: req.user.id } },
+        { new: true, upsert: true }
+      );
+
+      // abuse rules (same as you wanted)
+      if (doc.status === "pending") return res.status(400).json({ message: "Your verification is already under review." });
+      if (doc.status === "approved") return res.status(400).json({ message: "You are already verified." });
+
+      // decide idType based on what they submitted
+      const hasPassport = !!one("passport");
+      const hasMykad = !!one("mykadFront") || !!one("mykadBack");
+
+      doc.idType = hasPassport ? "passport" : hasMykad ? "mykad" : "none";
+
+      // set status + attempts
+      doc.status = "pending";
+      doc.note = "";
+      doc.submittedAt = new Date();
+      doc.lastSubmitAt = new Date();
+      doc.attempts = (doc.attempts || 0) + 1;
+
+      // ✅ store FileSchema objects
+      doc.files.licenseFront = toFileObj(dlFront, "licenseFront");
+      doc.files.licenseBack  = toFileObj(dlBack, "licenseBack");
+
+      const passport = one("passport");
+      const mykadFront = one("mykadFront");
+      const mykadBack = one("mykadBack");
+
+      if (passport) doc.files.passport = toFileObj(passport, "passport");
+      if (mykadFront) doc.files.mykadFront = toFileObj(mykadFront, "mykadFront");
+      if (mykadBack) doc.files.mykadBack = toFileObj(mykadBack, "mykadBack");
+
+      await doc.save();
+
+      return res.json({
+        message: "Documents uploaded. Verification is now pending review.",
+        verification: doc,
+      });
+    } catch (err) {
+      console.error("verification upload error:", err);
+      return res.status(400).json({ message: err.message || "Upload failed." });
+    }
+  }
+);
+
 // Routes
 console.log(chalk.cyan("📦 Routes loaded:"));
 app.use("/api/account-deletion-requests", accountDeletionRequestsRoute);
@@ -114,6 +207,8 @@ console.log(chalk.gray("• /api/wallet"));
 app.use("/api/support", supportRoutes);
 console.log(chalk.gray("• /api/support"));
 
+app.use("/api/verification", verificationRoutes);
+console.log(chalk.gray("• /api/verification"));
 
 app.get("/", (req, res) => {
   res.send("API running...");
