@@ -775,10 +775,9 @@ router.post("/social/google", async (req, res) => {
 router.post("/social/apple", async (req, res) => {
   try {
     const { identityToken } = req.body;
+
     if (!identityToken) {
-      return res
-        .status(400)
-        .json({ message: "Apple identity token is required." });
+      return res.status(400).json({ message: "Apple identity token is required." });
     }
 
     let decoded;
@@ -792,19 +791,37 @@ router.post("/social/apple", async (req, res) => {
     }
 
     const appleUserId = decoded.sub;
-    const email = decoded.email;
-    const name = decoded.email?.split("@")[0] || "Apple User";
+    const email = decoded.email || null;
 
-    if (!email) {
-      return res.status(400).json({
-        message:
-          "Apple did not return an email. Please use normal login or another method.",
-      });
+    // 1) First: find by stable Apple identifier
+    let user = await User.findOne({
+      authProvider: "apple",
+      providerId: appleUserId,
+    });
+
+    // 2) If not found, but email exists: link/find by email to avoid duplicates
+    if (!user && email) {
+      user = await User.findOne({ email });
+
+      if (user) {
+        user.authProvider = "apple";
+        user.providerId = appleUserId;
+        user.emailVerified = true;
+        await user.save();
+      }
     }
 
-    let user = await User.findOne({ email });
-
+    // 3) If still not found: create a user (only if we have an email)
     if (!user) {
+      if (!email) {
+        return res.status(400).json({
+          message:
+            "Apple didn't share an email for this account. Please choose “Share My Email” once, or sign in using email/password.",
+        });
+      }
+
+      const name = email.split("@")[0] || "Apple User";
+
       user = await User.create({
         name,
         email,
@@ -818,11 +835,17 @@ router.post("/social/apple", async (req, res) => {
       });
     }
 
-    const token = signAuthToken(user);
+    // Optional: ban check consistent with /login
+    if (user.status === "banned") {
+      return res
+        .status(403)
+        .json({ message: "Your account has been banned. Contact support." });
+    }
 
+    const token = signAuthToken(user);
     const needsPhoneNumber = !user.phoneNumber;
 
-    res.json({
+    return res.json({
       token,
       user: {
         id: user._id,
@@ -836,7 +859,7 @@ router.post("/social/apple", async (req, res) => {
     });
   } catch (err) {
     console.error("Apple social login error:", err);
-    res.status(500).json({ message: "Apple login failed." });
+    return res.status(500).json({ message: "Apple login failed." });
   }
 });
 
